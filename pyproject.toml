@@ -8,6 +8,7 @@ dependencies = [
     "deepagents",
     "fastapi",
     "langchain",
+    "langchain-openai>=1.6.4",
     "langgraph",
     "pydantic",
     "uvicorn[standard]",

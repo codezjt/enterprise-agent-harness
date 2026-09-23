@@ -1,0 +1,2 @@
+# 为什么不直接在 RunManager 里面调用 create_deep_agent？
+因为 Harness 的 Runtime 层不应该和具体 Agent Framework 耦合。我定义了统一的 AgentRuntime 抽象，由 DeepAgentRuntime 负责适配 DeepAgents。这样 RunManager、Task Orchestration、Governance 等上层模块只依赖 Runtime 接口，未来即使替换 Agent Framework，也不需要修改上层业务代码。
