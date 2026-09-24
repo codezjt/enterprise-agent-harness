@@ -30,6 +30,7 @@ class Run(BaseModel):
     error: str | None = None
 
     checkpoint_id: str | None = None
+    approval_id: str | None = None
 
     created_at: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc)
