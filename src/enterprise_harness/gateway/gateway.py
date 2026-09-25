@@ -1,10 +1,15 @@
+from __future__ import annotations
+
 from typing import Any
 
-from enterprise_harness.policy import (
-    PolicyDecision,
-    PolicyEngine,
-    Principal,
+from enterprise_harness.observability import (
+    SpanStatus,
+    SpanType,
+    TraceManager,
 )
+from enterprise_harness.policy.engine import PolicyEngine
+from enterprise_harness.policy.models import PolicyDecision
+from enterprise_harness.policy.rbac import Principal
 
 from .executor import ToolExecutor
 from .registry import ToolRegistry
@@ -13,21 +18,22 @@ from .validator import ToolValidator
 
 
 class ToolGateway:
-    """Tool 的统一执行入口。"""
 
     def __init__(
         self,
         registry: ToolRegistry,
-        router: ToolRouter | None = None,
-        validator: ToolValidator | None = None,
-        executor: ToolExecutor | None = None,
-        policy_engine: PolicyEngine | None = None,
+        router: ToolRouter,
+        validator: ToolValidator,
+        executor: ToolExecutor,
+        policy_engine: PolicyEngine,
+        trace_manager: TraceManager | None = None,
     ):
         self.registry = registry
-        self.router = router or ToolRouter(registry)
-        self.validator = validator or ToolValidator()
-        self.executor = executor or ToolExecutor()
-        self.policy_engine = policy_engine or PolicyEngine()
+        self.router = router
+        self.validator = validator
+        self.executor = executor
+        self.policy_engine = policy_engine
+        self.trace_manager = trace_manager
 
     async def execute(
         self,
@@ -35,39 +41,88 @@ class ToolGateway:
         arguments: dict[str, Any] | None = None,
         context: dict[str, Any] | None = None,
         principal: Principal | None = None,
+        *,
+        run_id: str | None = None,
+        parent_span_id: str | None = None,
     ) -> Any:
+
         arguments = arguments or {}
 
-        # 1. Registry / Router
-        tool = self.router.route(tool_name)
+        span = None
 
-        # 2. 参数校验
-        validated_arguments = self.validator.validate(
-            tool,
-            arguments,
-        )
+        if self.trace_manager is not None and run_id is not None:
 
-        # 3. RBAC + Policy
-        decision = self.policy_engine.check(
-            tool=tool,
-            arguments=validated_arguments,
-            context=context,
-            principal=principal,
-        )
-
-        # 4. Policy Decision
-        if decision == PolicyDecision.DENY:
-            raise PermissionError(
-                f"Tool execution denied by policy: {tool.name}"
+            span = self.trace_manager.start_span(
+                run_id=run_id,
+                span_type=SpanType.TOOL,
+                name=tool_name,
+                parent_span_id=parent_span_id,
+                input=arguments,
+                metadata={
+                    "principal_id": (
+                        principal.principal_id
+                        if principal
+                        else None
+                    )
+                },
             )
 
-        if decision == PolicyDecision.REQUIRE_APPROVAL:
-            raise PermissionError(
-                f"Tool execution requires approval: {tool.name}"
+        try:
+
+            # 1. Tool Routing
+            tool = self.router.route(tool_name)
+
+            # 2. Input Validation
+            validated_arguments = self.validator.validate(
+                tool,
+                arguments,
             )
 
-        # 5. Executor
-        return await self.executor.execute(
-            tool,
-            validated_arguments,
-        )
+            # 3. Policy Check
+            decision = self.policy_engine.check(
+                tool=tool,
+                arguments=validated_arguments,
+                context=context,
+                principal=principal,
+            )
+
+            # 4. Policy Deny
+            if decision == PolicyDecision.DENY:
+                raise PermissionError(
+                    f"Tool execution denied by policy: {tool.name}"
+                )
+
+            # 5. Approval
+            if decision == PolicyDecision.REQUIRE_APPROVAL:
+                raise PermissionError(
+                    f"Tool execution requires approval: {tool.name}"
+                )
+
+            # 6. Execute
+            result = await self.executor.execute(
+                tool,
+                validated_arguments,
+            )
+
+            # 7. Trace Success
+            if span is not None:
+
+                self.trace_manager.finish_span(
+                    span.span_id,
+                    output=result,
+                    status=SpanStatus.SUCCESS,
+                )
+
+            return result
+
+        except Exception as exc:
+
+            # 8. Trace Failure
+            if span is not None:
+
+                self.trace_manager.fail_span(
+                    span.span_id,
+                    exc,
+                )
+
+            raise

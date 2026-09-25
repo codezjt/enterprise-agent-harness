@@ -5,7 +5,9 @@ from .models import ToolDefinition
 
 
 class ToolExecutor:
-    """负责实际执行 Tool。"""
+    """
+    Tool 实际执行器。
+    """
 
     async def execute(
         self,
@@ -13,13 +15,13 @@ class ToolExecutor:
         arguments: dict[str, Any],
     ) -> Any:
         if tool.handler is None:
-            raise ValueError(
-                f"Tool '{tool.name}' has no handler"
+            raise RuntimeError(
+                f"Tool handler is not configured: {tool.name}"
             )
 
         result = tool.handler(**arguments)
 
         if inspect.isawaitable(result):
-            result = await result
+            return await result
 
         return result

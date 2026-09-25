@@ -3,7 +3,9 @@ from .registry import ToolRegistry
 
 
 class ToolRouter:
-    """负责根据 Tool 名称找到对应的 Tool 定义。"""
+    """
+    根据 Tool 名称路由到 ToolDefinition。
+    """
 
     def __init__(self, registry: ToolRegistry):
         self.registry = registry

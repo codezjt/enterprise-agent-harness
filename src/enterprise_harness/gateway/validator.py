@@ -1,13 +1,12 @@
 from typing import Any
 
-from jsonschema import ValidationError
-from jsonschema import validate
+from jsonschema import ValidationError, validate
 
 from .models import ToolDefinition
 
 
 class ToolValidationError(ValueError):
-    """Tool 参数校验失败。"""
+    pass
 
 
 class ToolValidator:

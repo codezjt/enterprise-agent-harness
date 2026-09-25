@@ -4,12 +4,6 @@ from .models import ToolDefinition
 class ToolRegistry:
     """
     Tool 注册中心。
-
-    负责：
-    1. 注册 Tool
-    2. 查询 Tool
-    3. 删除 Tool
-    4. 判断 Tool 是否存在
     """
 
     def __init__(self):

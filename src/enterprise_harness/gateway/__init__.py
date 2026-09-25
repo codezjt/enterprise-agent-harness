@@ -1,3 +1,4 @@
+from .deepagent import DeepAgentToolAdapter
 from .executor import ToolExecutor
 from .gateway import ToolGateway
 from .models import ToolDefinition
@@ -6,11 +7,12 @@ from .router import ToolRouter
 from .validator import ToolValidationError, ToolValidator
 
 __all__ = [
+    "DeepAgentToolAdapter",
+    "ToolExecutor",
+    "ToolGateway",
     "ToolDefinition",
     "ToolRegistry",
     "ToolRouter",
-    "ToolValidator",
     "ToolValidationError",
-    "ToolExecutor",
-    "ToolGateway",
+    "ToolValidator",
 ]
