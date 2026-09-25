@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from langchain_core.language_models import BaseChatModel
 from langchain_openai import ChatOpenAI
 
@@ -7,11 +9,6 @@ from enterprise_harness.config import get_env
 def resolve_model(
     model: str | BaseChatModel,
 ) -> str | BaseChatModel:
-    """
-    将 Harness 中的模型配置解析成
-    DeepAgents 可以使用的模型。
-    """
-
     if isinstance(model, BaseChatModel):
         return model
 
@@ -25,7 +22,6 @@ def resolve_model(
                 "DASHSCOPE_API_KEY is not configured"
             )
 
-        model_name = get_env("MODEL_NAME", model)
         base_url = get_env("MODEL_BASE_URL")
 
         if not base_url:
@@ -34,7 +30,7 @@ def resolve_model(
             )
 
         return ChatOpenAI(
-            model=model_name,
+            model=model,
             api_key=api_key,
             base_url=base_url,
         )

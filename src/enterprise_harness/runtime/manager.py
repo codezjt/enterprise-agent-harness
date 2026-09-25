@@ -10,6 +10,15 @@ from .context_builder import RunContextBuilder
 from .langgraph_runtime import LangGraphRuntime
 from .models import Run, RunStatus
 
+from enterprise_harness.orchestration.executor import AgentTaskExecutor
+from enterprise_harness.orchestration.scheduler import Scheduler
+from enterprise_harness.orchestration.task_graph import TaskGraph
+from enterprise_harness.orchestration.task import TaskStatus
+from enterprise_harness.orchestration.planner import Planner
+from enterprise_harness.orchestration.plan_validator import PlanValidator
+
+from enterprise_harness.orchestration.replanner import SimpleReplanner
+from enterprise_harness.runtime.recovery import RecoveryManager
 
 class RunManager:
 
@@ -33,6 +42,13 @@ class RunManager:
             RunContextBuilder(
                 self.trace_manager
             )
+        )
+
+        self.plan_validator = PlanValidator()
+
+        self.recovery_manager = RecoveryManager(
+            replanner=SimpleReplanner(),
+            max_replans=1,
         )
 
     async def create_run(
@@ -263,5 +279,173 @@ class RunManager:
             raise KeyError(
                 f"Run not found: {run_id}"
             )
+
+        return run
+
+    async def start_task_graph_run(
+            self,
+            run_id: str,
+            runtime: AgentRuntime,
+            task_graph: TaskGraph,
+            principal=None,
+    ) -> Run:
+        run = self._get_run(run_id)
+
+        run.status = RunStatus.RUNNING
+        run.started_at = datetime.now(timezone.utc)
+
+        run_context = self.context_builder.build(
+            run,
+            principal=principal,
+        )
+
+        executor = AgentTaskExecutor(
+            runtime=runtime,
+            run_context=run_context,
+        )
+
+        scheduler = Scheduler(
+            graph=task_graph,
+            executor=executor,
+        )
+
+        try:
+            result_graph = await scheduler.run()
+
+            run.result = {
+                task.task_id: task.output
+                for task in result_graph.tasks()
+            }
+
+            if result_graph.has_failed():
+                run.status = RunStatus.FAILED
+
+                failed_tasks = [
+                    task
+                    for task in result_graph.tasks()
+                    if task.status == TaskStatus.FAILED
+                ]
+
+                run.error = "; ".join(
+                    f"{task.task_id}: {task.error}"
+                    for task in failed_tasks
+                )
+            else:
+                run.status = RunStatus.COMPLETED
+
+            if run_context.trace_root_span_id:
+                self.trace_manager.finish_span(
+                    run_context.trace_root_span_id,
+                    output=run.result,
+                )
+
+        except Exception as exc:
+            run.status = RunStatus.FAILED
+            run.error = str(exc)
+
+            if run_context.trace_root_span_id:
+                self.trace_manager.fail_span(
+                    run_context.trace_root_span_id,
+                    exc,
+                )
+
+        finally:
+            run.completed_at = datetime.now(timezone.utc)
+
+        return run
+
+    async def start_planned_run(
+            self,
+            run_id: str,
+            runtime: AgentRuntime,
+            planner: Planner,
+            principal: Principal | None = None,
+    ) -> Run:
+        run = self._get_run(run_id)
+
+        run.status = RunStatus.RUNNING
+        run.started_at = datetime.now(timezone.utc)
+
+        run_context = self.context_builder.build(
+            run,
+            principal=principal,
+        )
+
+        try:
+            # 1. Planner：自然语言任务 -> Plan
+            plan = await planner.plan(run.task)
+
+            # 2. Plan：Plan -> TaskGraph
+            task_graph = self.plan_validator.validate(plan)
+
+            # 3. TaskGraph + Scheduler -> 执行
+            executor = AgentTaskExecutor(
+                runtime=runtime,
+                run_context=run_context,
+            )
+
+            scheduler = Scheduler(
+                graph=task_graph,
+                executor=executor,
+            )
+
+            result_graph = await scheduler.run()
+
+            # 4. 如果任务失败，进入 Recovery
+            if result_graph.has_failed():
+                def scheduler_factory(new_graph: TaskGraph) -> Scheduler:
+                    return Scheduler(
+                        graph=new_graph,
+                        executor=executor,
+                    )
+
+                result_graph = await self.recovery_manager.recover(
+                    original_task=run.task,
+                    graph=result_graph,
+                    scheduler_factory=scheduler_factory,
+                )
+
+            # 5. 收集最终任务结果
+            run.result = {
+                task.task_id: task.output
+                for task in result_graph.tasks()
+            }
+
+            # 6. 根据 Recovery 后的 TaskGraph 最终状态
+            #    决定 Run 状态
+            if result_graph.has_failed():
+                run.status = RunStatus.FAILED
+
+                failed_tasks = [
+                    task
+                    for task in result_graph.tasks()
+                    if task.status == TaskStatus.FAILED
+                ]
+
+                run.error = "; ".join(
+                    f"{task.task_id}: {task.error}"
+                    for task in failed_tasks
+                )
+            else:
+                run.status = RunStatus.COMPLETED
+
+            if run_context.trace_root_span_id:
+                self.trace_manager.finish_span(
+                    run_context.trace_root_span_id,
+                    output=run.result,
+                )
+
+        except Exception as exc:
+            run.status = RunStatus.FAILED
+            run.error = str(exc)
+
+            if run_context.trace_root_span_id:
+                self.trace_manager.fail_span(
+                    run_context.trace_root_span_id,
+                    exc,
+                )
+
+        finally:
+            run.completed_at = datetime.now(timezone.utc)
 
         return run
