@@ -4,6 +4,8 @@ from .trace import (
     SpanType,
     TraceSpan,
 )
+from .metrics import MetricCollector, MetricSnapshot
+from .cost import CostRecord, CostTracker, ModelPricing
 
 __all__ = [
     "TraceManager",

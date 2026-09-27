@@ -13,7 +13,7 @@ class MemoryManager:
         self.short_term = short_term or ShortTermMemory()
         self.long_term = long_term or LongTermMemory()
 
-    def store(
+    async def store(
         self,
         item: Any,
         *,
@@ -24,7 +24,7 @@ class MemoryManager:
         else:
             self.short_term.store(item)
 
-    def recall(
+    async def recall(
         self,
         *,
         limit: int = 10,

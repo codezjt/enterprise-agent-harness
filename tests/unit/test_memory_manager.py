@@ -1,3 +1,5 @@
+import pytest
+
 from enterprise_harness.memory import (
     LongTermMemory,
     MemoryManager,
@@ -14,7 +16,6 @@ def test_short_term_memory():
     assert memory.recall() == ["a", "b"]
     assert memory.recall(limit=1) == ["b"]
 
-
 def test_long_term_memory():
     memory = LongTermMemory()
 
@@ -22,28 +23,28 @@ def test_long_term_memory():
 
     assert memory.recall() == ["user preference"]
 
-
-def test_memory_manager():
+@pytest.mark.asyncio
+async def test_memory_manager():
     manager = MemoryManager()
 
-    manager.store("short")
+    await manager.store("short")
 
-    manager.store(
+    await manager.store(
         "long",
         long_term=True,
     )
 
-    assert manager.recall() == ["short"]
+    assert await manager.recall() == ["short"]
 
-    assert manager.recall(
+    assert await manager.recall(
         long_term=True,
     ) == ["long"]
 
-
-def test_clear_short_term():
+@pytest.mark.asyncio
+async def test_clear_short_term():
     manager = MemoryManager()
 
-    manager.store("a")
+    await manager.store("a")
     manager.clear_short_term()
 
-    assert manager.recall() == []
+    assert await manager.recall() == []
