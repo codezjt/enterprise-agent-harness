@@ -8,37 +8,39 @@ from enterprise_harness.orchestration.scheduler import Scheduler
 from enterprise_harness.orchestration.task import TaskStatus
 from enterprise_harness.orchestration.task_graph import TaskGraph
 
+from .retry import RetryPolicy
+
 
 class RecoveryManager:
     """
-    任务执行失败后的 Runtime Recovery 协调器。
+    Runtime Recovery 协调器。
 
-    RecoveryManager 不负责：
-    - 具体任务执行
-    - 任务规划
+    负责：
 
-    它只负责协调：
-
-        TaskGraph
-            ↓
-        FAILED
-            ↓
-        Replanner
-            ↓
-        新 TaskGraph
-            ↓
-        Scheduler
+        Task FAILED
+             ↓
+        RetryPolicy
+        /        \
+      Retry      Replan
+        │          │
+        └────┬─────┘
+             ▼
+          Scheduler
     """
 
     def __init__(
         self,
         replanner: Replanner,
+        retry_policy: RetryPolicy | None = None,
         max_replans: int = 1,
     ) -> None:
         if max_replans < 0:
-            raise ValueError("max_replans must be greater than or equal to 0")
+            raise ValueError(
+                "max_replans must be greater than or equal to 0"
+            )
 
         self.replanner = replanner
+        self.retry_policy = retry_policy or RetryPolicy()
         self.max_replans = max_replans
 
     async def recover(
@@ -48,20 +50,11 @@ class RecoveryManager:
         graph: TaskGraph,
         scheduler_factory,
     ) -> TaskGraph:
-        """
-        对失败的 TaskGraph 执行 Recovery。
-
-        scheduler_factory:
-            根据新的 TaskGraph 创建 Scheduler。
-        """
 
         replan_count = 0
         current_graph = graph
 
         while current_graph.has_failed():
-            if replan_count >= self.max_replans:
-                return current_graph
-
             failed_tasks = [
                 task
                 for task in current_graph.tasks()
@@ -72,6 +65,54 @@ class RecoveryManager:
                 return current_graph
 
             failed_task = failed_tasks[0]
+
+            # 1. 首先判断是否可以 Retry
+            retry_decision = self.retry_policy.should_retry(
+                failed_task
+            )
+
+            if retry_decision.retry:
+                retry_task = failed_task.model_copy(
+                    deep=True
+                )
+
+                retry_task.status = TaskStatus.PENDING
+                retry_task.retry_count += 1
+                retry_task.error = None
+
+                retry_tasks = [
+                    task.model_copy(deep=True)
+                    for task in current_graph.tasks()
+                    if task.task_id != failed_task.task_id
+                ]
+
+                retry_tasks.append(retry_task)
+
+                retry_graph = TaskGraph()
+
+                for task in retry_tasks:
+                    retry_graph.add_task(task)
+
+                for task in retry_tasks:
+                    for dependency in task.dependencies:
+                        retry_graph.add_dependency(
+                            task.task_id,
+                            dependency,
+                        )
+
+                current_graph = retry_graph
+
+                scheduler = scheduler_factory(
+                    current_graph
+                )
+
+                await scheduler.run()
+
+                continue
+
+            # 2. Retry 不允许，进入 Replan
+            if replan_count >= self.max_replans:
+                return current_graph
 
             completed_tasks = [
                 task
@@ -96,11 +137,15 @@ class RecoveryManager:
                 remaining_tasks=remaining_tasks,
             )
 
-            replan_result = await self.replanner.replan(request)
+            replan_result = await self.replanner.replan(
+                request
+            )
 
             current_graph = replan_result.to_task_graph()
 
-            scheduler = scheduler_factory(current_graph)
+            scheduler = scheduler_factory(
+                current_graph
+            )
 
             await scheduler.run()
 

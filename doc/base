@@ -1,0 +1,16 @@
+创建和初始化环境到启动
+cd C:\Users\zjt\PycharmProjects
+
+mkdir enterprise-agent-harness
+cd enterprise-agent-harness
+
+uv init
+uv python pin 3.12
+
+uv add fastapi uvicorn pydantic
+uv add deepagents langchain langgraph
+uv add --dev pytest pytest-asyncio
+
+uv sync
+
+uv run python --version

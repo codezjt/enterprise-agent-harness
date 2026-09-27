@@ -1,0 +1,20 @@
+AgentConfig 负责：
+Agent是谁？
+使用什么模型？
+有哪些工具？
+有哪些 Skills？
+有哪些 Middleware？
+
+AgentRuntime
+真实agent的抽象，方便真实agent继承，实现同一接口
+
+"""
+        执行一个 Agent Task。
+
+        Args:
+            task: 当前任务描述
+            context: Runtime 上下文
+
+        Returns:
+            Agent 执行结果
+        """

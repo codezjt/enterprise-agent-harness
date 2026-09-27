@@ -26,6 +26,7 @@ class DeepAgentRuntime(AgentRuntime):
         config: AgentConfig,
         tool_gateway: ToolGateway | None = None,
         tools: list[Any] | None = None,
+        principal=None,
     ):
         super().__init__(config)
 
@@ -42,6 +43,7 @@ class DeepAgentRuntime(AgentRuntime):
             system_prompt=config.system_prompt,
             name=config.name,
         )
+        self.principal = principal
 
     async def run(
         self,
@@ -84,14 +86,18 @@ class DeepAgentRuntime(AgentRuntime):
                 for tool_name in self.config.tools
             ]
 
+            principal = (
+                run_context.principal
+                if run_context.principal is not None
+                else self.principal
+            )
+
             adapter = DeepAgentToolAdapter(
                 gateway=self.tool_gateway,
-                principal=run_context.principal,
+                principal=principal,
                 context=run_context.context,
                 run_id=run_context.run_id,
-                parent_span_id=(
-                    run_context.current_span_id
-                ),
+                parent_span_id=run_context.current_span_id,
             )
 
             agent_tools.extend(

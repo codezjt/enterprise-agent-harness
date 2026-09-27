@@ -20,14 +20,17 @@ async def execute(state):
 
     if approval:
         return {
-            "status": "updated",
-            "task": state["task"],
+            "result": {
+                "status": "updated",
+                "task": state["task"],
+            }
         }
 
     return {
-        "status": "rejected",
+        "result": {
+            "status": "rejected",
+        }
     }
-
 
 @pytest.mark.asyncio
 async def test_run_waits_for_approval():
@@ -48,6 +51,10 @@ async def test_run_waits_for_approval():
         run.run_id,
     )
 
+    print("RUN STATUS:", result.status)
+    print("RUN ERROR:", result.error)
+    print("RUN RESULT:", result.result)
+    print("CHECKPOINT:", result.checkpoint_id)
     assert result.status == RunStatus.WAITING_APPROVAL
     assert result.completed_at is None
 

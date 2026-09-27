@@ -71,6 +71,9 @@ async def test_run_manager_with_real_llm_planner():
         runtime=runtime,
         planner=planner,
     )
+    print("RUN STATUS:", result.status)
+    print("RUN ERROR:", result.error)
+    print("RUN RESULT:", result.result)
 
     assert result.status == RunStatus.COMPLETED
 

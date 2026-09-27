@@ -14,6 +14,16 @@ class AgentRuntime(ABC):
     ):
         self.config = config
 
+    """
+            执行一个 Agent Task。
+
+            Args:
+                task: 当前任务描述
+                context: Runtime 上下文
+
+            Returns:
+                Agent 执行结果
+            """
     @abstractmethod
     async def run(
         self,

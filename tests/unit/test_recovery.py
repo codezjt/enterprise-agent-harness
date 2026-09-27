@@ -12,7 +12,7 @@ from enterprise_harness.orchestration.task import (
 )
 from enterprise_harness.orchestration.task_graph import TaskGraph
 from enterprise_harness.runtime.recovery import RecoveryManager
-
+from enterprise_harness.runtime.retry import RetryPolicy
 
 class RetryOnceReplanner(Replanner):
     """
@@ -163,3 +163,105 @@ async def test_recovery_stops_after_max_replans():
 
     assert recovered_graph.get_task("T1").status == TaskStatus.FAILED
     assert recovered_graph.get_task("T1").retry_count == 1
+
+@pytest.mark.asyncio
+async def test_recovery_retries_before_replanning():
+    graph = TaskGraph()
+
+    graph.add_task(
+        Task(
+            task_id="T1",
+            name="查询库存",
+            description="查询库存",
+            max_retries=1,
+        )
+    )
+
+    execution_count = 0
+
+    async def execute(task: Task):
+        nonlocal execution_count
+
+        execution_count += 1
+
+        if execution_count == 1:
+            raise RuntimeError("temporary timeout")
+
+        return "success"
+
+    scheduler = Scheduler(
+        graph=graph,
+        executor=execute,
+    )
+
+    await scheduler.run()
+
+    assert graph.get_task("T1").status == TaskStatus.FAILED
+
+    recovery = RecoveryManager(
+        replanner=RetryOnceReplanner(),
+        retry_policy=RetryPolicy(),
+        max_replans=0,
+    )
+
+    def scheduler_factory(new_graph: TaskGraph):
+        return Scheduler(
+            graph=new_graph,
+            executor=execute,
+        )
+
+    recovered_graph = await recovery.recover(
+        original_task="查询库存",
+        graph=graph,
+        scheduler_factory=scheduler_factory,
+    )
+
+    assert recovered_graph.get_task("T1").status == TaskStatus.SUCCESS
+    assert recovered_graph.get_task("T1").retry_count == 1
+    assert execution_count == 2
+
+    @pytest.mark.asyncio
+    async def test_recovery_replans_non_retryable_failure():
+        graph = TaskGraph()
+
+        graph.add_task(
+            Task(
+                task_id="T1",
+                name="修改订单",
+                description="修改订单",
+                max_retries=3,
+            )
+        )
+
+        async def execute(task: Task):
+            raise PermissionError("permission denied")
+
+        scheduler = Scheduler(
+            graph=graph,
+            executor=execute,
+        )
+
+        await scheduler.run()
+
+        assert graph.get_task("T1").status == TaskStatus.FAILED
+
+        recovery = RecoveryManager(
+            replanner=RetryOnceReplanner(),
+            retry_policy=RetryPolicy(),
+            max_replans=1,
+        )
+
+        def scheduler_factory(new_graph: TaskGraph):
+            return Scheduler(
+                graph=new_graph,
+                executor=execute,
+            )
+
+        recovered_graph = await recovery.recover(
+            original_task="修改订单",
+            graph=graph,
+            scheduler_factory=scheduler_factory,
+        )
+
+        assert recovered_graph.get_task("T1").status == TaskStatus.FAILED
+        assert recovered_graph.get_task("T1").retry_count == 1

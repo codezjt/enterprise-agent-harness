@@ -20,12 +20,17 @@ from enterprise_harness.orchestration.plan_validator import PlanValidator
 from enterprise_harness.orchestration.replanner import SimpleReplanner
 from enterprise_harness.runtime.recovery import RecoveryManager
 
+from enterprise_harness.orchestration.replanner import Replanner
+from enterprise_harness.orchestration.replanner import SimpleReplanner
+
 class RunManager:
 
     def __init__(
         self,
         langgraph_runtime: LangGraphRuntime | None = None,
         trace_manager: TraceManager | None = None,
+        replanner: Replanner | None = None,
+        max_replans: int = 1,
     ):
         self.runs: dict[str, Run] = {}
 
@@ -47,8 +52,8 @@ class RunManager:
         self.plan_validator = PlanValidator()
 
         self.recovery_manager = RecoveryManager(
-            replanner=SimpleReplanner(),
-            max_replans=1,
+            replanner=replanner or SimpleReplanner(),
+            max_replans=max_replans,
         )
 
     async def create_run(
@@ -435,9 +440,16 @@ class RunManager:
                     output=run.result,
                 )
 
+
         except Exception as exc:
+
+            import traceback
+
+            traceback.print_exc()
+
             run.status = RunStatus.FAILED
-            run.error = str(exc)
+
+            run.error = f"{type(exc).__name__}: {exc}"
 
             if run_context.trace_root_span_id:
                 self.trace_manager.fail_span(
@@ -449,3 +461,18 @@ class RunManager:
             run.completed_at = datetime.now(timezone.utc)
 
         return run
+
+    def _apply_runtime_result(
+            self,
+            run: Run,
+            result: dict[str, Any],
+    ) -> None:
+        if (
+                self.langgraph_runtime is not None
+                and self.langgraph_runtime.is_interrupted(result)
+        ):
+            run.status = RunStatus.WAITING_APPROVAL
+            return
+
+        run.result = result
+        run.status = RunStatus.COMPLETED

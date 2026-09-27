@@ -1,2 +1,435 @@
 # 为什么不直接在 RunManager 里面调用 create_deep_agent？
 因为 Harness 的 Runtime 层不应该和具体 Agent Framework 耦合。我定义了统一的 AgentRuntime 抽象，由 DeepAgentRuntime 负责适配 DeepAgents。这样 RunManager、Task Orchestration、Governance 等上层模块只依赖 Runtime 接口，未来即使替换 Agent Framework，也不需要修改上层业务代码。
+
+AgentConfig
+      │
+      ├── model
+      ├── tools
+      ├── skills
+      └── middleware
+不能简单理解成：
+
+tools=["query_order"]
+
+然后直接：
+
+create_deep_agent(tools=["query_order"])
+因为 Agent 真正需要的是：
+
+Tool Definition
+      ↓
+Tool Schema
+      ↓
+Tool Executor
+
+而我们的需求文档后面明确要求建立：
+
+Tool Gateway
+    │
+    ├── Registry
+    ├── Router
+    ├── Validator
+    ├── Executor
+    └── MCP
+
+所以最终会变成：
+AgentConfig
+    │
+    │ tools = ["query_order"]
+    ▼
+Tool Gateway
+    │
+    ├── 查 Registry
+    ├── Schema Validation
+    ├── Identity
+    ├── RBAC
+    ├── Policy
+    ├── Approval
+    └── Executor
+            │
+            ▼
+        Real Tool
+
+而不是让 DeepAgentRuntime 自己管理所有 Tool。
+
+## agent model 多态
+以后如果你换：
+
+MODEL_BASE_URL=xxx
+
+代码完全不用改。
+
+甚至以后：
+
+MODEL_PROVIDER=openai
+
+也只是：
+
+if provider == "openai":
+    ...
+elif provider == "dashscope":
+    ...
+elif provider == "deepseek":
+    ...
+
+最终形成：
+
+                Model Factory
+                     │
+          MODEL_PROVIDER
+                     │
+       ┌─────────────┼─────────────┐
+       ↓             ↓             ↓
+   dashscope       openai       deepseek
+       │             │             │
+       ↓             ↓             ↓
+   BaseChatModel  BaseChatModel  BaseChatModel
+       │             │             │
+       └─────────────┼─────────────┘
+                     ↓
+              DeepAgentRuntime
+
+这才是我们要的企业级模型接入层。
+
+## RunManager 是干什么的
+你现在已经有：
+
+DeepAgentRuntime
+       ↓
+    run(task)
+       ↓
+DeepAgents
+
+但是企业系统不能让 API 直接调用：
+
+runtime.run(...)
+
+因为以后需要管理：
+
+run_id
+agent_id
+task
+status
+创建时间
+开始时间
+结束时间
+result
+error
+checkpoint_id
+cancel
+resume
+
+需求文档里给出的 RunManager 接口就是：
+
+class RunManager:
+
+    async def create_run(...):
+        ...
+
+    async def start_run(...):
+        ...
+
+    async def cancel_run(...):
+        ...
+
+    async def resume_run(...):
+        ...
+
+    async def get_run(...):
+        ...
+
+并且 Runtime 生命周期需要最终支持：
+
+CREATED
+   ↓
+RUNNING
+   ↓
+PLANNING
+   ↓
+EXECUTING
+   ↓
+COMPLETED
+
+异常：
+FAILED
+CANCELLED
+TIMEOUT
+
+未来：
+WAITING_APPROVAL
+
+## manager负责触发具体的agent run
+有两种方式：
+1、使用预定义的langgraph agent         src/enterprise_harness/runtime/manager.py:158
+2.使用agentRuntime 的子类实现的多态接口  src/enterprise_harness/runtime/manager.py:98
+
+
+
+
+##  DeepAgentRuntime有graph的agent_run,LangGraphRuntime也有graph_run，怎么统一的
+目前：
+DeepAgentRuntime
+和：
+LangGraphRuntime
+还是两个东西。
+这是正确的。
+因为：
+DeepAgentRuntime
+负责：
+Agent 能力
+也就是：
+LLM
+Tool
+Filesystem
+Todo
+SubAgent
+Skills
+Context
+LangGraphRuntime
+负责：
+Durable Execution
+也就是：
+State
+Checkpoint
+Interrupt
+Resume
+所以你的最终结构不是：
+DeepAgents OR LangGraph
+而是：
+
+                 Enterprise Harness
+                         │
+          ┌──────────────┴──────────────┐
+          │                             │
+     Agent Capability            Durable Runtime
+          │                             │
+     DeepAgents                     LangGraph
+          │                             │
+          └──────────────┬──────────────┘
+                         │
+                    RunManager
+这正是这个项目值得作为“企业级 Agent Runtime / Harness”项目来讲的地方。
+不是把 create_deep_agent 换成 LangGraph，而是，保留 DeepAgents 作为 Agent Runtime，把 LangGraph 的 checkpoint + interrupt/resume 能力接入你自己的 RunManager，从而形成 Enterprise Agent Harness 的可恢复执行层。
+目前我们有两个 Runtime：
+
+AgentRuntime
+   │
+   └── DeepAgentRuntime
+
+以及：
+
+LangGraphRuntime
+
+现在不要把它们强行继承成一个类。
+
+我们先让：
+
+RunManager
+
+成为上层协调者：
+
+                    RunManager
+                   /          \
+                  /            \
+       AgentRuntime       LangGraphRuntime
+            │                    │
+       DeepAgents           Durable Runtime
+
+后面再把 DeepAgent 放进 LangGraph 的执行节点。
+按照我们现在这套《Enterprise Agent Harness 需求文档 + 开发说明书》的分阶段设计，DeepAgents 其实已经引入了，只是目前还没有进入我们正在调试的这条 HITL Runtime 主链。
+
+你现在看到的代码主要是在搭：
+
+Harness Runtime 基础设施
+
+而 DeepAgents 属于：
+
+Agent 能力层
+
+所以顺序上是合理的。
+
+当前进度
+
+我们现在大概是：
+
+Phase 1：Agent Runtime
+    ↓
+DeepAgentRuntime        ← 已经完成
+    ↓
+RunManager              ← 已完成
+    ↓
+Tool Gateway            ← 已完成基础版
+    ↓
+Policy / RBAC           ← 已完成基础版
+    ↓
+HITL / LangGraph        ← 正在完成
+
+之前已经有：
+
+class DeepAgentRuntime(AgentRuntime):
+
+    def __init__(self, config):
+        super().__init__(config)
+
+        model = resolve_model(config.model)
+
+        self.agent = create_deep_agent(
+            model=model,
+            system_prompt=config.system_prompt,
+            name=config.name,
+        )
+
+所以 DeepAgents 不是后面才安装/引入，而是已经作为 Harness 的 Agent Runtime 实现存在了。
+
+为什么现在没有一直用 DeepAgents？
+
+因为我们现在解决的是一个更底层的问题：
+
+Run
+ ↓
+状态
+ ↓
+Interrupt
+ ↓
+Checkpoint
+ ↓
+Approval
+ ↓
+Resume
+
+这些能力主要属于：
+
+LangGraph Durable Runtime + Harness Runtime。
+
+DeepAgents 的核心价值不是替代这部分，而是提供：
+
+Agent Loop
+Filesystem
+Todo
+SubAgent
+Skills
+Context Management
+Summarization
+
+也就是：
+
+              Enterprise Harness
+                     │
+        ┌────────────┴────────────┐
+        │                         │
+  Agent Capability          Durable Runtime
+        │                         │
+  DeepAgents                 LangGraph
+        │                         │
+ Agent Loop                 State
+ Filesystem                 Checkpoint
+ Todo                       Interrupt
+ SubAgent                   Resume
+ Skills
+ Context
+
+### 大模型的toolget,怎么兼容ate_agent 的graph的addition
+ 目标架构
+AgentConfig
+   │
+   ├── tools
+   │
+   ↓
+DeepAgentRuntime
+   │
+   ├── DeepAgents
+   │
+   └── Tool Gateway
+           │
+           ├── Registry
+           ├── Validator
+           ├── RBAC
+           ├── Policy
+           └── Executor
+
+但是不要让 DeepAgents 直接绕过 Gateway 调 Python handler。
+通过adapt把普通tool转化为StructuredTool
+    def adapt(
+        self,
+        tool: ToolDefinition,
+    ) -> StructuredTool:
+
+        async def invoke(**arguments: Any) -> Any:
+
+            return await self.gateway.execute(
+                tool_name=tool.name,
+                arguments=arguments,
+                context=self.context,
+                principal=self.principal,
+                run_id=self.run_id,
+                parent_span_id=self.parent_span_id,
+            )
+
+        return StructuredTool.from_function(
+            coroutine=invoke,
+            name=tool.name,
+            description=tool.description,
+            args_schema=None,
+        )
+然后 agent_tools.extend(
+                adapter.adapt_all(
+                    definitions
+                )
+            )
+     agent = create_deep_agent(
+            model=model,
+            tools=agent_tools,
+            system_prompt=self.config.system_prompt,
+            name=self.config.name,
+        ) 传入deepagents的agent中
+
+
+## 为什么不直接使用 DeepAgents 的 Tool？
+
+因为 DeepAgents 解决的是 Agent 执行层面的 Tool Calling，而企业 Harness 需要进一步解决工具注册、统一路由、参数校验、权限、风险控制、审批、审计、执行治理。需求文档明确将这些企业能力放在 Tool Gateway 层
+
+##  result = tool.handler(**arguments) 为什么可以直接调用函数
+handler: Callable[..., Any] | None = None
+并不是“存一个函数名字符串”，而是存函数本身。
+
+## Principal → RBAC → PolicyEngine → PolicyDecision → ToolGateway 中BAC,PolicyEngine主要负责什么
+RBAC 解决“这个人有没有权限”。
+PolicyEngine 解决“当前场景最终能不能执行”。
+RBAC 和 Policy 不是一回事。
+例如：
+用户：
+operator
+权限：
+order:update
+调用：
+update_order
+RBAC：
+order:update
+      ↓
+     YES
+但是 Policy 仍然可能：
+REQUIRE_APPROVAL
+最终：
+RBAC
+ ↓
+允许
+Policy
+ ↓
+需要审批
+最终：
+REQUIRE_APPROVAL
+所以：
+RBAC 是权限门槛，不是最终决策
+## Harness和LangGraph 分工
+Harness 管
+Run
+RunStatus
+Approval
+Checkpoint
+生命周期
+LangGraph 管
+Graph
+interrupt
+Command(resume=...)
+Checkpoint
+State

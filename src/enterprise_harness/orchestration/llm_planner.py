@@ -51,6 +51,10 @@ class LLMPlanner(Planner):
         if isinstance(result, Plan):
             return result
 
+        print("========== LLM PLAN ==========")
+        print(result.model_dump_json(indent=2))
+        print("==============================")
+
         return Plan.model_validate(result)
 
     @staticmethod
