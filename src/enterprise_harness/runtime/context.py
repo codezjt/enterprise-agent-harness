@@ -5,7 +5,7 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from enterprise_harness.policy.rbac import Principal
-
+from enterprise_harness.context import ContextItem
 
 class RunContext(BaseModel):
     """
@@ -34,3 +34,5 @@ class RunContext(BaseModel):
     metadata: dict[str, Any] = Field(
         default_factory=dict
     )
+
+    built_context: list[ContextItem] = Field(default_factory=list)

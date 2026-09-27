@@ -1,5 +1,5 @@
 from enterprise_harness.context import ContextBuilder
-
+from enterprise_harness.context import TokenBudget
 
 def test_context_builder_priority():
     builder = ContextBuilder()
@@ -30,3 +30,19 @@ def test_context_builder_priority():
         "memory",
         "conversation",
     ]
+
+    def test_context_builder_with_token_budget():
+        builder = ContextBuilder(
+            token_budget=TokenBudget(max_tokens=10),
+        )
+
+        items = builder.build(
+            system_policy="12345",
+            task="12345",
+            tool_results=["12345"],
+        )
+
+        assert len(items) == 2
+
+        assert items[0].source == "system_policy"
+        assert items[1].source == "task"
