@@ -3,6 +3,8 @@ from __future__ import annotations
 from typing import Any
 
 from enterprise_harness.observability import (
+    AuditLogger,
+    MetricCollector,
     SpanStatus,
     SpanType,
     TraceManager,
@@ -27,6 +29,8 @@ class ToolGateway:
         executor: ToolExecutor,
         policy_engine: PolicyEngine,
         trace_manager: TraceManager | None = None,
+        audit_logger: AuditLogger | None = None,
+        metric_collector: MetricCollector | None = None,
     ):
         self.registry = registry
         self.router = router
@@ -34,6 +38,43 @@ class ToolGateway:
         self.executor = executor
         self.policy_engine = policy_engine
         self.trace_manager = trace_manager
+        self.audit_logger = audit_logger
+        self.metric_collector = metric_collector
+
+    def _record_audit(
+        self,
+        *,
+        tool_name: str,
+        arguments: dict[str, Any],
+        decision: PolicyDecision,
+        result: Any = None,
+        principal: Principal | None = None,
+        context: dict[str, Any] | None = None,
+        run_id: str | None = None,
+        approver: str | None = None,
+    ) -> None:
+        if self.audit_logger is None:
+            return
+
+        context = context or {}
+
+        self.audit_logger.record(
+            event="tool_execution",
+            user_id=(
+                principal.principal_id
+                if principal is not None
+                else "anonymous"
+            ),
+            agent_id=str(
+                context.get("agent_id", "unknown")
+            ),
+            run_id=run_id or "unknown",
+            tool=tool_name,
+            arguments=arguments,
+            decision=decision.value,
+            approver=approver,
+            result=result,
+        )
 
     async def execute(
         self,
@@ -51,7 +92,6 @@ class ToolGateway:
         span = None
 
         if self.trace_manager is not None and run_id is not None:
-
             span = self.trace_manager.start_span(
                 run_id=run_id,
                 span_type=SpanType.TOOL,
@@ -88,12 +128,41 @@ class ToolGateway:
 
             # 4. Policy Deny
             if decision == PolicyDecision.DENY:
+                self._record_audit(
+                    tool_name=tool.name,
+                    arguments=validated_arguments,
+                    decision=decision,
+                    result={
+                        "success": False,
+                        "error": "policy_denied",
+                    },
+                    principal=principal,
+                    context=context,
+                    run_id=run_id,
+                )
+
+                if self.metric_collector is not None:
+                    self.metric_collector.record_policy_denied()
+
                 raise PermissionError(
                     f"Tool execution denied by policy: {tool.name}"
                 )
 
             # 5. Approval
             if decision == PolicyDecision.REQUIRE_APPROVAL:
+                self._record_audit(
+                    tool_name=tool.name,
+                    arguments=validated_arguments,
+                    decision=decision,
+                    result={
+                        "success": False,
+                        "error": "approval_required",
+                    },
+                    principal=principal,
+                    context=context,
+                    run_id=run_id,
+                )
+
                 raise PermissionError(
                     f"Tool execution requires approval: {tool.name}"
                 )
@@ -104,9 +173,24 @@ class ToolGateway:
                 validated_arguments,
             )
 
+            if self.metric_collector is not None:
+                self.metric_collector.record_tool(success=True)
+
+            self._record_audit(
+                tool_name=tool.name,
+                arguments=validated_arguments,
+                decision=decision,
+                result={
+                    "success": True,
+                    "output": result,
+                },
+                principal=principal,
+                context=context,
+                run_id=run_id,
+            )
+
             # 7. Trace Success
             if span is not None:
-
                 self.trace_manager.finish_span(
                     span.span_id,
                     output=result,
@@ -117,9 +201,35 @@ class ToolGateway:
 
         except Exception as exc:
 
+            if (
+                self.audit_logger is not None
+                and "tool" in locals()
+                and "validated_arguments" in locals()
+                and "decision" in locals()
+                and decision == PolicyDecision.ALLOW
+            ):
+                self._record_audit(
+                    tool_name=tool.name,
+                    arguments=validated_arguments,
+                    decision=decision,
+                    result={
+                        "success": False,
+                        "error": str(exc),
+                    },
+                    principal=principal,
+                    context=context,
+                    run_id=run_id,
+                )
+
+            if (
+                self.metric_collector is not None
+                and "decision" in locals()
+                and decision == PolicyDecision.ALLOW
+            ):
+                self.metric_collector.record_tool(success=False)
+
             # 8. Trace Failure
             if span is not None:
-
                 self.trace_manager.fail_span(
                     span.span_id,
                     exc,
