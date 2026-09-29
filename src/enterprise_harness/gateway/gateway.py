@@ -17,6 +17,7 @@ from .executor import ToolExecutor
 from .registry import ToolRegistry
 from .router import ToolRouter
 from .validator import ToolValidator
+import time
 
 
 class ToolGateway:
@@ -88,7 +89,7 @@ class ToolGateway:
     ) -> Any:
 
         arguments = arguments or {}
-
+        start_time = time.perf_counter()
         span = None
 
         if self.trace_manager is not None and run_id is not None:
@@ -200,13 +201,12 @@ class ToolGateway:
             return result
 
         except Exception as exc:
-
             if (
-                self.audit_logger is not None
-                and "tool" in locals()
-                and "validated_arguments" in locals()
-                and "decision" in locals()
-                and decision == PolicyDecision.ALLOW
+                    self.audit_logger is not None
+                    and "tool" in locals()
+                    and "validated_arguments" in locals()
+                    and "decision" in locals()
+                    and decision == PolicyDecision.ALLOW
             ):
                 self._record_audit(
                     tool_name=tool.name,
@@ -222,13 +222,12 @@ class ToolGateway:
                 )
 
             if (
-                self.metric_collector is not None
-                and "decision" in locals()
-                and decision == PolicyDecision.ALLOW
+                    self.metric_collector is not None
+                    and "decision" in locals()
+                    and decision == PolicyDecision.ALLOW
             ):
                 self.metric_collector.record_tool(success=False)
 
-            # 8. Trace Failure
             if span is not None:
                 self.trace_manager.fail_span(
                     span.span_id,
@@ -236,3 +235,11 @@ class ToolGateway:
                 )
 
             raise
+        finally:
+            if self.metric_collector is not None:
+                latency_ms = (
+                                     time.perf_counter() - start_time
+                             ) * 1000
+                self.metric_collector.record_latency(
+                    latency_ms
+                )
