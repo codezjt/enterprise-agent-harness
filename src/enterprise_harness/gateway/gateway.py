@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any
+from .exceptions import ApprovalRequiredError
 
 from enterprise_harness.observability import (
     AuditLogger,
@@ -18,6 +19,9 @@ from .registry import ToolRegistry
 from .router import ToolRouter
 from .validator import ToolValidator
 import time
+from enterprise_harness.policy.approval_manager import (
+    ApprovalManager,
+)
 
 
 class ToolGateway:
@@ -32,6 +36,7 @@ class ToolGateway:
         trace_manager: TraceManager | None = None,
         audit_logger: AuditLogger | None = None,
         metric_collector: MetricCollector | None = None,
+        approval_manager: ApprovalManager | None = None,
     ):
         self.registry = registry
         self.router = router
@@ -41,6 +46,10 @@ class ToolGateway:
         self.trace_manager = trace_manager
         self.audit_logger = audit_logger
         self.metric_collector = metric_collector
+        self.approval_manager = (
+                approval_manager
+                or ApprovalManager()
+        )
 
     def _record_audit(
         self,
@@ -164,8 +173,14 @@ class ToolGateway:
                     run_id=run_id,
                 )
 
-                raise PermissionError(
-                    f"Tool execution requires approval: {tool.name}"
+                raise ApprovalRequiredError(
+                    tool_name=tool.name,
+                    arguments=validated_arguments,
+                    message=(
+                        f"Tool execution requires approval: "
+                        f"{tool.name}"
+                    ),
+                    run_id=run_id,
                 )
 
             # 6. Execute

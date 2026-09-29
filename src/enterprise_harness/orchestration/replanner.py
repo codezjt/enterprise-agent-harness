@@ -119,6 +119,11 @@ class SimpleReplanner(Replanner):
         failed_task.retry_count += 1
         failed_task.error = None
 
+        failed_task.input.pop(
+            "dependency_results",
+            None,
+        )
+
         tasks.append(failed_task)
 
         # 3. 保留尚未执行的任务

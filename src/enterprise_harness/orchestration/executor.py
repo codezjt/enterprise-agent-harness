@@ -10,10 +10,7 @@ from .task import Task
 
 class AgentTaskExecutor:
     """
-    将 Orchestration 层的 Task 转换成 AgentRuntime 的执行请求。
-
-    Scheduler 不直接依赖 AgentRuntime，
-    而是通过这个 Executor 完成两层之间的适配。
+    将 Orchestration Task 适配为 AgentRuntime 执行请求。
     """
 
     def __init__(
@@ -24,19 +21,41 @@ class AgentTaskExecutor:
         self.runtime = runtime
         self.run_context = run_context
 
-    async def execute(self, task: Task) -> Any:
-        task_context = dict(self.run_context.context)
+    async def execute(
+        self,
+        task: Task,
+    ) -> Any:
+        task_context = dict(
+            self.run_context.context
+        )
 
         task_context["task_id"] = task.task_id
         task_context["task_name"] = task.name
 
         if task.input:
-            task_context["task_input"] = task.input
+            task_context["task_input"] = dict(
+                task.input
+            )
+
+        dependency_results = task.input.get(
+            "dependency_results"
+        )
+
+        if dependency_results:
+            task_context[
+                "dependency_results"
+            ] = dependency_results
 
         return await self.runtime.run(
-            task=task.description or task.name,
+            task=(
+                task.description
+                or task.name
+            ),
             context=task_context,
         )
 
-    async def __call__(self, task: Task) -> Any:
+    async def __call__(
+        self,
+        task: Task,
+    ) -> Any:
         return await self.execute(task)

@@ -11,6 +11,17 @@ TaskExecutor = Callable[[Task], Awaitable[Any]]
 
 
 class Scheduler:
+    """
+    TaskGraph 调度器。
+
+    负责：
+    1. 找到 READY Task
+    2. 并行执行无依赖任务
+    3. 将依赖任务结果注入下游 Task
+    4. 控制最大并发数
+    5. 维护 Task 状态
+    """
+
     def __init__(
         self,
         graph: TaskGraph,
@@ -18,7 +29,9 @@ class Scheduler:
         max_concurrency: int = 4,
     ) -> None:
         if max_concurrency <= 0:
-            raise ValueError("max_concurrency must be greater than 0")
+            raise ValueError(
+                "max_concurrency must be greater than 0"
+            )
 
         self.graph = graph
         self.executor = executor
@@ -75,6 +88,8 @@ class Scheduler:
         self,
         task: Task,
     ) -> None:
+        self._inject_dependency_results(task)
+
         self.graph.mark_running(task.task_id)
 
         try:
@@ -90,3 +105,50 @@ class Scheduler:
                 task.task_id,
                 error=str(exc),
             )
+
+    def _inject_dependency_results(
+        self,
+        task: Task,
+    ) -> None:
+        """
+        将已经成功完成的依赖任务结果注入当前 Task。
+
+        例如：
+
+        T1 -> order
+        T2 -> inventory
+
+        T3.dependencies = ["T1", "T2"]
+
+        则：
+
+        T3.input["dependency_results"] = {
+            "T1": order,
+            "T2": inventory,
+        }
+        """
+
+        if not task.dependencies:
+            return
+
+        dependency_results: dict[str, Any] = {}
+
+        for dependency_id in task.dependencies:
+            dependency = self.graph.get_task(
+                dependency_id
+            )
+
+            if dependency.status != TaskStatus.SUCCESS:
+                raise RuntimeError(
+                    f"Dependency task is not successful: "
+                    f"{dependency_id}"
+                )
+
+            dependency_results[
+                dependency_id
+            ] = dependency.output
+
+        task.input = {
+            **task.input,
+            "dependency_results": dependency_results,
+        }

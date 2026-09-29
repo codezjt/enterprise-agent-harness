@@ -80,6 +80,11 @@ class RecoveryManager:
                 retry_task.retry_count += 1
                 retry_task.error = None
 
+                retry_task.input.pop(
+                    "dependency_results",
+                    None,
+                )
+
                 retry_tasks = [
                     task.model_copy(deep=True)
                     for task in current_graph.tasks()
