@@ -12,7 +12,10 @@ class RuntimeState(TypedDict, total=False):
     task: str
     context: dict[str, Any]
     result: Any
+
     approval: dict[str, Any] | None
+    approval_id: str | None
+
     waiting_for_approval: bool
 
 
@@ -42,14 +45,14 @@ class LangGraphRuntime:
             "execute",
         )
 
-        graph.add_edge(
+        graph.add_conditional_edges(
             "execute",
-            "approval",
+            self._route_after_execute,
         )
 
-        graph.add_edge(
+        graph.add_conditional_edges(
             "approval",
-            END,
+            self._route_after_approval,
         )
 
         self.graph = graph.compile(
@@ -70,6 +73,7 @@ class LangGraphRuntime:
                 "context": context or {},
                 "result": None,
                 "approval": None,
+                "approval_id": None,
                 "waiting_for_approval": False,
             },
             config=config,
@@ -115,6 +119,7 @@ class LangGraphRuntime:
     def extract_approval(
         result: dict[str, Any],
     ) -> dict[str, Any] | None:
+
         interrupts = result.get("__interrupt__")
 
         if not interrupts:
@@ -139,8 +144,8 @@ class LangGraphRuntime:
         return approval
 
     async def _execute_node(
-            self,
-            state: RuntimeState,
+        self,
+        state: RuntimeState,
     ):
         from enterprise_harness.gateway.exceptions import (
             ApprovalRequiredError,
@@ -150,15 +155,18 @@ class LangGraphRuntime:
             result = await self.execute(state)
 
         except ApprovalRequiredError as exc:
+            approval = {
+                "status": "REQUIRE_APPROVAL",
+                "approval_id": exc.approval_id,
+                "run_id": exc.run_id,
+                "tool_name": exc.tool_name,
+                "arguments": exc.arguments,
+                "message": str(exc),
+            }
+
             return {
-                "approval": {
-                    "status": "REQUIRE_APPROVAL",
-                    "approval_id": exc.approval_id,
-                    "run_id": exc.run_id,
-                    "tool_name": exc.tool_name,
-                    "arguments": exc.arguments,
-                    "message": str(exc),
-                },
+                "approval": approval,
+                "approval_id": exc.approval_id,
                 "waiting_for_approval": True,
             }
 
@@ -180,7 +188,18 @@ class LangGraphRuntime:
                 "waiting_for_approval": False,
             }
 
-        if approval.get("status") != "REQUIRE_APPROVAL":
+        status = approval.get("status")
+
+        if status == "APPROVED":
+            return {
+                "approval": approval,
+                "approval_id": approval.get(
+                    "approval_id"
+                ),
+                "waiting_for_approval": False,
+            }
+
+        if status != "REQUIRE_APPROVAL":
             return {
                 "waiting_for_approval": False,
             }
@@ -196,10 +215,68 @@ class LangGraphRuntime:
             }
         )
 
+        if not isinstance(decision, dict):
+            raise PermissionError(
+                "Invalid approval decision"
+            )
+
+        approval_id = decision.get(
+            "approval_id"
+        )
+
+        approved = decision.get(
+            "approved"
+        )
+
+        if not approval_id:
+            raise PermissionError(
+                "approval_id is required"
+            )
+
+        if approved is not True:
+            raise PermissionError(
+                "Approval was not granted"
+            )
+
+        if approval_id != approval.get(
+            "approval_id"
+        ):
+            raise PermissionError(
+                "Approval id does not match"
+            )
+
         return {
             "approval": {
                 **approval,
+                "status": "APPROVED",
+                "approval_id": approval_id,
                 "decision": decision,
             },
+            "approval_id": approval_id,
             "waiting_for_approval": False,
         }
+
+    @staticmethod
+    def _route_after_execute(
+        state: RuntimeState,
+    ) -> str:
+
+        if state.get("waiting_for_approval"):
+            return "approval"
+
+        return END
+
+    @staticmethod
+    def _route_after_approval(
+        state: RuntimeState,
+    ) -> str:
+
+        approval = state.get("approval")
+
+        if (
+            isinstance(approval, dict)
+            and approval.get("status") == "APPROVED"
+        ):
+            return "execute"
+
+        return END

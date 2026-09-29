@@ -11,6 +11,10 @@ from enterprise_harness.policy import (
     PolicyRule,
 )
 
+from enterprise_harness.gateway.exceptions import (
+    ApprovalRequiredError,
+)
+
 
 def query_order(order_id: str):
     return {
@@ -192,6 +196,7 @@ async def test_gateway_policy_deny():
 
 @pytest.mark.asyncio
 async def test_gateway_policy_require_approval():
+
     policy_engine = PolicyEngine(
         rules=[
             PolicyRule(
@@ -204,7 +209,7 @@ async def test_gateway_policy_require_approval():
     gateway = create_gateway(policy_engine)
 
     with pytest.raises(
-        PermissionError,
+        ApprovalRequiredError,
         match="requires approval",
     ):
         await gateway.execute(
@@ -213,4 +218,105 @@ async def test_gateway_policy_require_approval():
                 "order_id": "1001",
                 "quantity": 80,
             },
+            run_id="run-001",
+        )
+
+@pytest.mark.asyncio
+async def test_gateway_executes_after_approval():
+
+    policy_engine = PolicyEngine(
+        rules=[
+            PolicyRule(
+                tool_name="update_order",
+                decision=PolicyDecision.REQUIRE_APPROVAL,
+            )
+        ]
+    )
+
+    gateway = create_gateway(policy_engine)
+
+    arguments = {
+        "order_id": "1001",
+        "quantity": 80,
+    }
+
+    with pytest.raises(ApprovalRequiredError) as exc_info:
+
+        await gateway.execute(
+            tool_name="update_order",
+            arguments=arguments,
+            run_id="run-001",
+        )
+
+    approval_id = exc_info.value.approval_id
+
+    approval = await gateway.approval_manager.approve(
+        approval_id=approval_id,
+        comment="approved",
+    )
+
+    assert approval.approval_id == approval_id
+
+    result = await gateway.execute(
+        tool_name="update_order",
+        arguments=arguments,
+        run_id="run-001",
+        approval_id=approval_id,
+    )
+
+    assert result is not None
+
+@pytest.mark.asyncio
+async def test_gateway_rejects_unknown_approval():
+
+    policy_engine = PolicyEngine(
+        rules=[
+            PolicyRule(
+                tool_name="update_order",
+                decision=PolicyDecision.REQUIRE_APPROVAL,
+            )
+        ]
+    )
+
+    gateway = create_gateway(policy_engine)
+
+    arguments = {
+        "order_id": "1001",
+        "quantity": 80,
+    }
+
+    # 1. 不存在的 approval_id
+    with pytest.raises(KeyError):
+        await gateway.execute(
+            tool_name="update_order",
+            arguments=arguments,
+            run_id="run-001",
+            approval_id="approval-not-exist",
+        )
+
+    # 2. 创建真实审批请求
+    with pytest.raises(ApprovalRequiredError) as exc_info:
+        await gateway.execute(
+            tool_name="update_order",
+            arguments=arguments,
+            run_id="run-001",
+        )
+
+    approval_id = exc_info.value.approval_id
+
+    # 3. 审批通过
+    await gateway.approval_manager.approve(
+        approval_id
+    )
+
+    # 4. 把同一个 approval 用到其他 Run
+    with pytest.raises(
+        PermissionError,
+        match="does not belong to this run",
+    ):
+        await gateway.execute(
+            tool_name="update_order",
+            arguments=arguments,
+            run_id="run-002",
+            approval_id=approval_id,
         )

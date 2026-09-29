@@ -51,34 +51,52 @@ async def test_approval_required_interrupts_runtime():
 
 @pytest.mark.asyncio
 async def test_resume_after_approval():
-    async def execute(
-        state: dict[str, Any],
-    ):
-        raise ApprovalRequiredError(
-            approval_id="approval-002",
-            run_id="run-002",
-            tool_name="delete_order",
-            arguments={
-                "order_id": "ORDER-002",
-            },
-        )
+
+    executed = False
+
+    async def execute(state):
+        nonlocal executed
+
+        if not executed:
+            executed = True
+
+            raise ApprovalRequiredError(
+                approval_id="approval-001",
+                run_id="run-001",
+                tool_name="update_order",
+                arguments={
+                    "order_id": "1001",
+                },
+                message="需要审批",
+            )
+
+        return {
+            "result": "completed",
+        }
 
     runtime = LangGraphRuntime(
         execute=execute,
     )
 
     result = await runtime.run(
-        run_id="run-002",
-        task="delete order",
+        run_id="run-001",
+        task="update order",
     )
 
     assert runtime.is_interrupted(result)
 
-    resumed = await runtime.resume(
-        run_id="run-002",
+    approval = runtime.extract_approval(result)
+
+    assert approval is not None
+    assert approval["approval_id"] == "approval-001"
+
+    result = await runtime.resume(
+        run_id="run-001",
         value={
+            "approval_id": "approval-001",
             "approved": True,
         },
     )
 
-    assert resumed is not None
+    assert not runtime.is_interrupted(result)
+    assert runtime.extract_result(result) == "completed"

@@ -87,14 +87,15 @@ class ToolGateway:
         )
 
     async def execute(
-        self,
-        tool_name: str,
-        arguments: dict[str, Any] | None = None,
-        context: dict[str, Any] | None = None,
-        principal: Principal | None = None,
-        *,
-        run_id: str | None = None,
-        parent_span_id: str | None = None,
+            self,
+            tool_name: str,
+            arguments: dict[str, Any] | None = None,
+            context: dict[str, Any] | None = None,
+            principal: Principal | None = None,
+            *,
+            run_id: str | None = None,
+            parent_span_id: str | None = None,
+            approval_id: str | None = None,
     ) -> Any:
 
         arguments = arguments or {}
@@ -160,50 +161,69 @@ class ToolGateway:
 
             # 5. Approval
             if decision == PolicyDecision.REQUIRE_APPROVAL:
-                requester_id = None
 
-                if principal is not None:
-                    requester_id = principal.principal_id
+                if approval_id is not None:
 
-                if run_id is None:
-                    raise ValueError(
-                        "run_id is required when tool execution "
-                        "requires approval"
-                    )
+                    if run_id is None:
+                        raise ValueError(
+                            "run_id is required when validating approval"
+                        )
 
-                approval_request = (
-                    await self.approval_manager.create_request(
+                    await self.approval_manager.validate_approval(
+                        approval_id=approval_id,
                         run_id=run_id,
                         tool_name=tool.name,
                         arguments=validated_arguments,
-                        requester_id=requester_id,
                     )
-                )
 
-                self._record_audit(
-                    tool_name=tool.name,
-                    arguments=validated_arguments,
-                    decision=decision,
-                    result={
-                        "success": False,
-                        "error": "approval_required",
-                        "approval_id": approval_request.approval_id,
-                    },
-                    principal=principal,
-                    context=context,
-                    run_id=run_id,
-                )
+                else:
 
-                raise ApprovalRequiredError(
-                    approval_id=approval_request.approval_id,
-                    run_id=run_id,
-                    tool_name=tool.name,
-                    arguments=validated_arguments,
-                    message=(
-                        f"Tool execution requires approval: "
-                        f"{tool.name}"
-                    ),
-                )
+                    requester_id = None
+
+                    if principal is not None:
+                        requester_id = principal.principal_id
+
+                    if run_id is None:
+                        raise ValueError(
+                            "run_id is required when tool execution "
+                            "requires approval"
+                        )
+
+                    approval_request = (
+                        await self.approval_manager.create_request(
+                            run_id=run_id,
+                            tool_name=tool.name,
+                            arguments=validated_arguments,
+                            requester_id=requester_id,
+                        )
+                    )
+
+                    self._record_audit(
+                        tool_name=tool.name,
+                        arguments=validated_arguments,
+                        decision=decision,
+                        result={
+                            "success": False,
+                            "error": "approval_required",
+                            "approval_id": (
+                                approval_request.approval_id
+                            ),
+                        },
+                        principal=principal,
+                        context=context,
+                        run_id=run_id,
+                    )
+
+                    raise ApprovalRequiredError(
+                        approval_id=approval_request.approval_id,
+                        run_id=run_id,
+                        tool_name=tool.name,
+                        arguments=validated_arguments,
+                        message=(
+                            f"Tool execution requires approval: "
+                            f"{tool.name}"
+                        ),
+                    )
 
             # 6. Execute
             result = await self.executor.execute(
