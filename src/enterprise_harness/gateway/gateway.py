@@ -160,6 +160,26 @@ class ToolGateway:
 
             # 5. Approval
             if decision == PolicyDecision.REQUIRE_APPROVAL:
+                requester_id = None
+
+                if principal is not None:
+                    requester_id = principal.principal_id
+
+                if run_id is None:
+                    raise ValueError(
+                        "run_id is required when tool execution "
+                        "requires approval"
+                    )
+
+                approval_request = (
+                    await self.approval_manager.create_request(
+                        run_id=run_id,
+                        tool_name=tool.name,
+                        arguments=validated_arguments,
+                        requester_id=requester_id,
+                    )
+                )
+
                 self._record_audit(
                     tool_name=tool.name,
                     arguments=validated_arguments,
@@ -167,6 +187,7 @@ class ToolGateway:
                     result={
                         "success": False,
                         "error": "approval_required",
+                        "approval_id": approval_request.approval_id,
                     },
                     principal=principal,
                     context=context,
@@ -174,13 +195,14 @@ class ToolGateway:
                 )
 
                 raise ApprovalRequiredError(
+                    approval_id=approval_request.approval_id,
+                    run_id=run_id,
                     tool_name=tool.name,
                     arguments=validated_arguments,
                     message=(
                         f"Tool execution requires approval: "
                         f"{tool.name}"
                     ),
-                    run_id=run_id,
                 )
 
             # 6. Execute

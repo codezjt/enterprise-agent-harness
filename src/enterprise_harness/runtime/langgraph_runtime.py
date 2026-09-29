@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from typing import Any, Callable
 
 from langgraph.checkpoint.memory import InMemorySaver
@@ -55,10 +57,10 @@ class LangGraphRuntime:
         )
 
     async def run(
-            self,
-            run_id: str,
-            task: str,
-            context: dict[str, Any] | None = None,
+        self,
+        run_id: str,
+        task: str,
+        context: dict[str, Any] | None = None,
     ):
         config = self._config(run_id)
 
@@ -74,9 +76,9 @@ class LangGraphRuntime:
         )
 
     async def resume(
-            self,
-            run_id: str,
-            value: Any,
+        self,
+        run_id: str,
+        value: Any,
     ):
         config = self._config(run_id)
 
@@ -86,7 +88,9 @@ class LangGraphRuntime:
         )
 
     @staticmethod
-    def _config(run_id: str) -> dict[str, Any]:
+    def _config(
+        run_id: str,
+    ) -> dict[str, Any]:
         return {
             "configurable": {
                 "thread_id": run_id,
@@ -95,18 +99,75 @@ class LangGraphRuntime:
 
     @staticmethod
     def is_interrupted(
-            result: dict[str, Any],
+        result: dict[str, Any],
     ) -> bool:
-        return bool(result.get("__interrupt__"))
+        return bool(
+            result.get("__interrupt__")
+        )
 
     @staticmethod
     def extract_result(
-            result: dict[str, Any],
+        result: dict[str, Any],
     ) -> Any:
         return result.get("result")
 
-    async def _execute_node(self, state: RuntimeState):
-        return await self.execute(state)
+    @staticmethod
+    def extract_approval(
+        result: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        interrupts = result.get("__interrupt__")
+
+        if not interrupts:
+            return None
+
+        interrupt_value = interrupts[0]
+
+        value = getattr(
+            interrupt_value,
+            "value",
+            interrupt_value,
+        )
+
+        if not isinstance(value, dict):
+            return None
+
+        approval = value.get("approval")
+
+        if not isinstance(approval, dict):
+            return None
+
+        return approval
+
+    async def _execute_node(
+            self,
+            state: RuntimeState,
+    ):
+        from enterprise_harness.gateway.exceptions import (
+            ApprovalRequiredError,
+        )
+
+        try:
+            result = await self.execute(state)
+
+        except ApprovalRequiredError as exc:
+            return {
+                "approval": {
+                    "status": "REQUIRE_APPROVAL",
+                    "approval_id": exc.approval_id,
+                    "run_id": exc.run_id,
+                    "tool_name": exc.tool_name,
+                    "arguments": exc.arguments,
+                    "message": str(exc),
+                },
+                "waiting_for_approval": True,
+            }
+
+        if isinstance(result, dict):
+            return result
+
+        return {
+            "result": result,
+        }
 
     async def _approval_node(
         self,

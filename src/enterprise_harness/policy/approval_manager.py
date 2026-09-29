@@ -74,6 +74,38 @@ class ApprovalManager:
 
         return request
 
+    async def validate_approval(
+        self,
+        approval_id: str,
+        run_id: str,
+        tool_name: str,
+        arguments: dict,
+    ) -> ApprovalRequest:
+        request = await self.get_request(
+            approval_id
+        )
+
+        if request.status != ApprovalStatus.APPROVED:
+            raise PermissionError(
+                "Approval request is not approved"
+            )
+
+        if request.run_id != run_id:
+            raise PermissionError(
+                "Approval does not belong to this run"
+            )
+
+        if request.tool_name != tool_name:
+            raise PermissionError(
+                "Approval does not match tool"
+            )
+
+        if request.arguments != arguments:
+            raise PermissionError(
+                "Approval does not match arguments"
+            )
+
+        return request
     async def list_pending(
         self,
     ) -> list[ApprovalRequest]:
