@@ -3,30 +3,27 @@ from typing import Any
 from uuid import uuid4
 
 from enterprise_harness.agent.runtime import AgentRuntime
-from enterprise_harness.observability import TraceManager
+from enterprise_harness.observability import (
+    MetricCollector,
+    TraceManager,
+)
+from enterprise_harness.orchestration.executor import AgentTaskExecutor
+from enterprise_harness.orchestration.plan_validator import PlanValidator
+from enterprise_harness.orchestration.planner import Planner
+from enterprise_harness.orchestration.replanner import (
+    Replanner,
+    SimpleReplanner,
+)
+from enterprise_harness.orchestration.scheduler import Scheduler
+from enterprise_harness.orchestration.task import TaskStatus
+from enterprise_harness.orchestration.task_graph import TaskGraph
 from enterprise_harness.policy.rbac import Principal
+from enterprise_harness.runtime.recovery import RecoveryManager
 
 from .context_builder import RunContextBuilder
 from .langgraph_runtime import LangGraphRuntime
 from .models import Run, RunStatus
 
-from enterprise_harness.orchestration.executor import AgentTaskExecutor
-from enterprise_harness.orchestration.scheduler import Scheduler
-from enterprise_harness.orchestration.task_graph import TaskGraph
-from enterprise_harness.orchestration.task import TaskStatus
-from enterprise_harness.orchestration.planner import Planner
-from enterprise_harness.orchestration.plan_validator import PlanValidator
-
-from enterprise_harness.orchestration.replanner import SimpleReplanner
-from enterprise_harness.runtime.recovery import RecoveryManager
-
-from enterprise_harness.orchestration.replanner import Replanner
-from enterprise_harness.orchestration.replanner import SimpleReplanner
-
-from enterprise_harness.observability import (
-    MetricCollector,
-    TraceManager,
-)
 
 class RunManager:
 
@@ -148,7 +145,6 @@ class RunManager:
         run = self._get_run(run_id)
 
         run.status = RunStatus.RUNNING
-
         run.started_at = datetime.now(
             timezone.utc
         )
@@ -163,27 +159,15 @@ class RunManager:
                 )
             )
 
-            if self.langgraph_runtime.is_interrupted(
-                result
-            ):
-
-                run.status = (
-                    RunStatus.WAITING_APPROVAL
-                )
-
-                return run
-
-            run.result = (
-                self.langgraph_runtime.extract_result(
-                    result
-                )
+            self._apply_runtime_result(
+                run=run,
+                result=result,
             )
 
-            run.status = RunStatus.COMPLETED
-
-            run.completed_at = (
-                datetime.now(timezone.utc)
-            )
+            if run.status == RunStatus.COMPLETED:
+                run.completed_at = (
+                    datetime.now(timezone.utc)
+                )
 
         except Exception as exc:
 
@@ -226,27 +210,15 @@ class RunManager:
                 )
             )
 
-            if self.langgraph_runtime.is_interrupted(
-                result
-            ):
-
-                run.status = (
-                    RunStatus.WAITING_APPROVAL
-                )
-
-                return run
-
-            run.result = (
-                self.langgraph_runtime.extract_result(
-                    result
-                )
+            self._apply_runtime_result(
+                run=run,
+                result=result,
             )
 
-            run.status = RunStatus.COMPLETED
-
-            run.completed_at = (
-                datetime.now(timezone.utc)
-            )
+            if run.status == RunStatus.COMPLETED:
+                run.completed_at = (
+                    datetime.now(timezone.utc)
+                )
 
         except Exception as exc:
 
@@ -296,16 +268,19 @@ class RunManager:
         return run
 
     async def start_task_graph_run(
-            self,
-            run_id: str,
-            runtime: AgentRuntime,
-            task_graph: TaskGraph,
-            principal=None,
+        self,
+        run_id: str,
+        runtime: AgentRuntime,
+        task_graph: TaskGraph,
+        principal=None,
     ) -> Run:
+
         run = self._get_run(run_id)
 
         run.status = RunStatus.RUNNING
-        run.started_at = datetime.now(timezone.utc)
+        run.started_at = datetime.now(
+            timezone.utc
+        )
 
         run_context = self.context_builder.build(
             run,
@@ -323,6 +298,7 @@ class RunManager:
         )
 
         try:
+
             result_graph = await scheduler.run()
 
             run.result = {
@@ -331,6 +307,7 @@ class RunManager:
             }
 
             if result_graph.has_failed():
+
                 run.status = RunStatus.FAILED
 
                 if self.metric_collector is not None:
@@ -348,7 +325,9 @@ class RunManager:
                     f"{task.task_id}: {task.error}"
                     for task in failed_tasks
                 )
+
             else:
+
                 run.status = RunStatus.COMPLETED
 
                 if self.metric_collector is not None:
@@ -363,6 +342,7 @@ class RunManager:
                 )
 
         except Exception as exc:
+
             run.status = RunStatus.FAILED
             run.error = str(exc)
 
@@ -373,21 +353,27 @@ class RunManager:
                 )
 
         finally:
-            run.completed_at = datetime.now(timezone.utc)
+
+            run.completed_at = (
+                datetime.now(timezone.utc)
+            )
 
         return run
 
     async def start_planned_run(
-            self,
-            run_id: str,
-            runtime: AgentRuntime,
-            planner: Planner,
-            principal: Principal | None = None,
+        self,
+        run_id: str,
+        runtime: AgentRuntime,
+        planner: Planner,
+        principal: Principal | None = None,
     ) -> Run:
+
         run = self._get_run(run_id)
 
         run.status = RunStatus.RUNNING
-        run.started_at = datetime.now(timezone.utc)
+        run.started_at = datetime.now(
+            timezone.utc
+        )
 
         run_context = self.context_builder.build(
             run,
@@ -395,11 +381,16 @@ class RunManager:
         )
 
         try:
+
             # 1. Planner：自然语言任务 -> Plan
-            plan = await planner.plan(run.task)
+            plan = await planner.plan(
+                run.task
+            )
 
             # 2. Plan：Plan -> TaskGraph
-            task_graph = self.plan_validator.validate(plan)
+            task_graph = self.plan_validator.validate(
+                plan
+            )
 
             # 3. TaskGraph + Scheduler -> 执行
             executor = AgentTaskExecutor(
@@ -416,16 +407,21 @@ class RunManager:
 
             # 4. 如果任务失败，进入 Recovery
             if result_graph.has_failed():
-                def scheduler_factory(new_graph: TaskGraph) -> Scheduler:
+
+                def scheduler_factory(
+                    new_graph: TaskGraph,
+                ) -> Scheduler:
                     return Scheduler(
                         graph=new_graph,
                         executor=executor,
                     )
 
-                result_graph = await self.recovery_manager.recover(
-                    original_task=run.task,
-                    graph=result_graph,
-                    scheduler_factory=scheduler_factory,
+                result_graph = (
+                    await self.recovery_manager.recover(
+                        original_task=run.task,
+                        graph=result_graph,
+                        scheduler_factory=scheduler_factory,
+                    )
                 )
 
             # 5. 收集最终任务结果
@@ -434,9 +430,10 @@ class RunManager:
                 for task in result_graph.tasks()
             }
 
-            # 6. 根据 Recovery 后的 TaskGraph 最终状态
-            #    决定 Run 状态
+            # 6. 根据 Recovery 后的 TaskGraph
+            #    最终状态决定 Run 状态
             if result_graph.has_failed():
+
                 run.status = RunStatus.FAILED
 
                 if self.metric_collector is not None:
@@ -454,7 +451,9 @@ class RunManager:
                     f"{task.task_id}: {task.error}"
                     for task in failed_tasks
                 )
+
             else:
+
                 run.status = RunStatus.COMPLETED
 
                 if self.metric_collector is not None:
@@ -468,7 +467,6 @@ class RunManager:
                     output=run.result,
                 )
 
-
         except Exception as exc:
 
             import traceback
@@ -477,7 +475,9 @@ class RunManager:
 
             run.status = RunStatus.FAILED
 
-            run.error = f"{type(exc).__name__}: {exc}"
+            run.error = (
+                f"{type(exc).__name__}: {exc}"
+            )
 
             if run_context.trace_root_span_id:
                 self.trace_manager.fail_span(
@@ -486,21 +486,69 @@ class RunManager:
                 )
 
         finally:
-            run.completed_at = datetime.now(timezone.utc)
+
+            run.completed_at = (
+                datetime.now(timezone.utc)
+            )
 
         return run
 
     def _apply_runtime_result(
-            self,
-            run: Run,
-            result: dict[str, Any],
+        self,
+        run: Run,
+        result: dict[str, Any],
     ) -> None:
+
+        # 1. LangGraph interrupt
+        #
+        # 当前 Runtime 的 interrupt 表示：
+        # Tool 执行需要人工审批。
         if (
-                self.langgraph_runtime is not None
-                and self.langgraph_runtime.is_interrupted(result)
+            self.langgraph_runtime is not None
+            and self.langgraph_runtime.is_interrupted(
+                result
+            )
         ):
-            run.status = RunStatus.WAITING_APPROVAL
+
+            approval = (
+                self.langgraph_runtime.extract_approval(
+                    result
+                )
+            )
+
+            if approval is None:
+                raise RuntimeError(
+                    "LangGraph runtime was interrupted "
+                    "but no approval information was found"
+                )
+
+            approval_id = approval.get(
+                "approval_id"
+            )
+
+            if not approval_id:
+                raise RuntimeError(
+                    "Approval interruption does not "
+                    "contain approval_id"
+                )
+
+            run.approval_id = approval_id
+            run.status = (
+                RunStatus.WAITING_APPROVAL
+            )
+
             return
 
-        run.result = result
+        # 2. Runtime 正常完成
+        run.result = (
+            self.langgraph_runtime.extract_result(
+                result
+            )
+            if self.langgraph_runtime is not None
+            else result
+        )
+
         run.status = RunStatus.COMPLETED
+
+        # 审批已经完成，不再保留旧 approval_id
+        run.approval_id = None
