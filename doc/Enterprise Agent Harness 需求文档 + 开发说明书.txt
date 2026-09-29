@@ -1,0 +1,1396 @@
+《Enterprise Agent Harness 需求文档 + 开发说明书》。
+我会刻意控制范围：不是做一个几十万行的 Agent 平台，而是做一个 10k～20k LOC 左右、架构完整、企业级特征明显、能够作为简历项目和源码学习项目的 Harness。
+
+Enterprise Agent Harness
+基于 DeepAgents + LangChain + LangGraph 构建的企业级 Agent Runtime / Harness
+版本：V1.0
+
+一、项目定位
+1.1 项目目标
+构建一个生产导向的 Enterprise Agent Harness，用于解决企业 Agent 在以下方面的问题：
+●  Agent 生命周期管理 
+●  多步骤任务编排 
+●  Tool 统一治理 
+●  Tool 权限控制 
+●  Human-in-the-loop 
+●  Agent 状态持久化 
+●  中断与恢复 
+●  Failure Recovery 
+●  Replan 
+●  SubAgent 
+●  Memory / RAG / Context Engineering 
+●  Trace / Audit 
+●  Evaluation 
+●  Agent Version / Governance 
+项目不重复实现成熟框架已经提供的能力，而采用：
+DeepAgents
+    ↓
+Agent Capability
+
+LangChain
+    ↓
+Model / Tool / Middleware 抽象
+
+LangGraph
+    ↓
+Runtime / State / Checkpoint / Interrupt
+
+Enterprise Agent Harness
+    ↓
+企业级 Control Plane
+
+二、项目核心理念
+2.1 不重复造轮子
+以下能力尽量直接复用：
+DeepAgents
+├── Agent Loop
+├── Filesystem
+├── Todo
+├── SubAgent
+├── Skills
+├── Context Management
+└── Summarization
+
+LangChain
+├── Model
+├── Tool
+├── Middleware
+├── Message
+└── Agent abstraction
+
+LangGraph
+├── State
+├── Graph
+├── Checkpoint
+├── Interrupt
+├── Resume
+├── Streaming
+└── Durable Runtime
+
+三、项目最终架构
+┌─────────────────────┐
+                         │       Client        │
+                         │ Web / API / CLI     │
+                         └──────────┬──────────┘
+                                    │
+                                    ↓
+                    ┌───────────────────────────┐
+                    │    Enterprise Harness     │
+                    │                           │
+                    │ Agent Control Plane       │
+                    └─────────────┬─────────────┘
+                                  │
+              ┌───────────────────┼────────────────────┐
+              ↓                   ↓                    ↓
+       Agent Management      Task Orchestration    Governance
+              │                   │                    │
+       Agent Registry          Planner              Policy
+       Agent Version           Task Graph           RBAC
+       Agent Config            Scheduler            Audit
+                                Replan              Tenant
+              │                   │
+              └───────────────────┼────────────────────┘
+                                  ↓
+                        ┌───────────────────┐
+                        │  Agent Runtime    │
+                        │                   │
+                        │ DeepAgent Adapter │
+                        └─────────┬─────────┘
+                                  │
+                        ┌─────────▼─────────┐
+                        │    DeepAgents     │
+                        │                   │
+                        │ Loop              │
+                        │ Middleware        │
+                        │ SubAgent          │
+                        │ Skills            │
+                        │ Filesystem        │
+                        └─────────┬─────────┘
+                                  │
+                        ┌─────────▼─────────┐
+                        │    LangChain      │
+                        │                   │
+                        │ Model / Tool      │
+                        │ Message           │
+                        └─────────┬─────────┘
+                                  │
+                        ┌─────────▼─────────┐
+                        │    LangGraph      │
+                        │                   │
+                        │ State             │
+                        │ Checkpoint        │
+                        │ Interrupt         │
+                        │ Resume            │
+                        │ Streaming         │
+                        └───────────────────┘
+
+四、核心模块
+最终项目分为 9 大模块。
+1. Agent Management
+2. Agent Runtime
+3. Task Orchestration
+4. Tool Gateway
+5. Policy & Security
+6. Context & Memory
+7. Runtime Recovery
+8. Observability
+9. Evaluation & Governance
+
+五、项目目录
+最终推荐目录：
+enterprise-agent-harness/
+│
+├── README.md
+├── pyproject.toml
+├── .env.example
+│
+├── docs/
+│   ├── architecture.md
+│   ├── runtime.md
+│   ├── tool-gateway.md
+│   ├── policy.md
+│   ├── task-orchestration.md
+│   ├── observability.md
+│   └── evaluation.md
+│
+├── src/
+│   └── enterprise_harness/
+│
+│       ├── agent/
+│       │   ├── factory.py
+│       │   ├── config.py
+│       │   ├── profile.py
+│       │   └── deepagent_adapter.py
+│       │
+│       ├── orchestration/
+│       │   ├── planner.py
+│       │   ├── task.py
+│       │   ├── task_graph.py
+│       │   ├── scheduler.py
+│       │   └── replanner.py
+│       │
+│       ├── gateway/
+│       │   ├── registry.py
+│       │   ├── router.py
+│       │   ├── validator.py
+│       │   ├── executor.py
+│       │   └── mcp.py
+│       │
+│       ├── policy/
+│       │   ├── engine.py
+│       │   ├── rules.py
+│       │   ├── rbac.py
+│       │   └── approval.py
+│       │
+│       ├── runtime/
+│       │   ├── run_manager.py
+│       │   ├── lifecycle.py
+│       │   ├── checkpoint.py
+│       │   └── recovery.py
+│       │
+│       ├── context/
+│       │   ├── builder.py
+│       │   ├── budget.py
+│       │   └── routing.py
+│       │
+│       ├── memory/
+│       │   ├── manager.py
+│       │   ├── short_term.py
+│       │   └── long_term.py
+│       │
+│       ├── security/
+│       │   ├── identity.py
+│       │   ├── tenant.py
+│       │   └── audit.py
+│       │
+│       ├── observability/
+│       │   ├── trace.py
+│       │   ├── metrics.py
+│       │   └── cost.py
+│       │
+│       ├── evaluation/
+│       │   ├── dataset.py
+│       │   ├── evaluator.py
+│       │   └── runner.py
+│       │
+│       └── api/
+│           ├── server.py
+│           ├── agents.py
+│           ├── runs.py
+│           └── approvals.py
+│
+├── examples/
+│   └── european_order_agent/
+│       ├── agent.py
+│       ├── tools.py
+│       ├── skills/
+│       └── README.md
+│
+└── tests/
+    ├── unit/
+    ├── integration/
+    └── e2e/
+
+六、模块一：Agent Management
+负责 Agent 定义、配置、版本。
+6.1 AgentConfig
+class AgentConfig:
+    agent_id: str
+    name: str
+    version: str
+
+    model: str
+
+    system_prompt: str
+
+    tools: list[str]
+
+    skills: list[str]
+
+    middleware: list[str]
+
+    metadata: dict
+例如：
+agent_id: europe-order-agent
+version: "1.0.0"
+
+model: qwen3-max
+
+tools:
+  - query_order
+  - query_inventory
+  - update_order
+
+skills:
+  - order-analysis
+  - inventory-analysis
+
+七、模块二：DeepAgent Adapter
+这是整个项目非常重要的一层。
+不要让 Enterprise Harness 到处直接调用：
+create_deep_agent()
+统一通过：
+class AgentRuntime:
+
+    async def run(
+        self,
+        task,
+        context
+    ):
+        ...
+然后：
+class DeepAgentRuntime(AgentRuntime):
+
+    def __init__(self, config):
+        self.agent = create_deep_agent(
+            model=config.model,
+            tools=config.tools,
+            ...
+        )
+
+    async def run(self, task, context):
+        ...
+这样：
+Enterprise Harness
+        ↓
+AgentRuntime
+        ↓
+DeepAgentRuntime
+        ↓
+DeepAgents
+未来即使换 Agent Framework：
+DeepAgentRuntime
+LangGraphRuntime
+CustomRuntime
+上层都不用变化。
+
+八、模块三：Task Orchestration
+负责复杂任务。
+8.1 Task
+class Task:
+
+    id: str
+
+    name: str
+
+    description: str
+
+    dependencies: list[str]
+
+    status: TaskStatus
+
+    result: object | None
+
+    error: str | None
+状态：
+PENDING
+READY
+RUNNING
+SUCCESS
+FAILED
+RETRYING
+BLOCKED
+CANCELLED
+WAITING_APPROVAL
+
+九、Task Graph
+例如：
+query_order
+     │
+     ├──────────────┐
+     ↓              ↓
+query_inventory   query_logistics
+     │              │
+     └──────┬───────┘
+            ↓
+        analyze_order
+            ↓
+        update_order
+Graph：
+T1 ─────┐
+        │
+T2 ─────┼──→ T4 ──→ T5
+        │
+T3 ─────┘
+支持：
+Dependency
+Parallel
+Join
+Failure
+Retry
+Replan
+
+十、Replanner
+当：
+Task A
+ ↓
+Tool failure
+不是直接结束。
+而是：
+Failure
+ ↓
+Failure Classifier
+ ↓
+Can Retry?
+ ├── Yes → Retry
+ │
+ └── No
+      ↓
+   Replan
+      ↓
+Alternative Task
+例如：
+query_inventory
+      ↓
+timeout
+      ↓
+retry × 2
+      ↓
+still failed
+      ↓
+use inventory_snapshot
+
+十一、模块四：Tool Gateway
+这是你的核心自研模块。
+Tool Gateway
+                     │
+          ┌──────────┼──────────┐
+          ↓          ↓          ↓
+       Registry    Router     Validator
+          │          │          │
+          └──────────┼──────────┘
+                     ↓
+                  Policy
+                     ↓
+                Permission
+                     ↓
+                  Execute
+
+11.1 Tool Registry
+class ToolDefinition:
+
+    name: str
+
+    description: str
+
+    input_schema: dict
+
+    risk_level: str
+
+    permissions: list[str]
+
+    timeout: int
+
+    retry_policy: dict
+注册：
+registry.register(tool)
+查询：
+registry.get("update_order")
+
+十二、Tool Gateway 调用流程
+任何 Tool 都不能直接执行。
+必须：
+LLM Tool Call
+      ↓
+Registry
+      ↓
+Schema Validation
+      ↓
+Identity
+      ↓
+RBAC
+      ↓
+Policy
+      ↓
+Risk
+      ↓
+Approval?
+      ↓
+Executor
+      ↓
+Result Validation
+      ↓
+Observation
+
+十三、MCP
+MCP 作为 Tool Gateway 的一种来源。
+Tool Gateway
+                      │
+       ┌──────────────┼──────────────┐
+       ↓              ↓              ↓
+   Python Tool     MCP Tool      HTTP Tool
+例如：
+gateway.register_mcp_server(
+    name="order-service",
+    endpoint="..."
+)
+MCP 负责：
+Tool Discovery
+Tool Schema
+Tool Invocation
+企业 Harness 负责：
+Permission
+Policy
+Audit
+Risk
+Approval
+
+十四、模块五：Policy Engine
+核心接口：
+class PolicyEngine:
+
+    def check(
+        self,
+        principal,
+        agent,
+        tool,
+        arguments,
+        context
+    ) -> PolicyDecision:
+        ...
+返回：
+ALLOW
+DENY
+REQUIRE_APPROVAL
+
+14.1 示例
+query_order
+→ ALLOW
+
+update_order
+→ ALLOW
+
+cancel_order
+→ REQUIRE_APPROVAL
+
+refund_order
+→ REQUIRE_APPROVAL
+
+delete_order
+→ DENY
+
+十五、RBAC
+第一版实现简单 RBAC：
+Role
+│
+├── viewer
+├── operator
+├── manager
+└── admin
+权限：
+order:read
+order:update
+order:cancel
+order:refund
+关系：
+viewer
+ → order:read
+
+operator
+ → order:read
+ → order:update
+
+manager
+ → order:read
+ → order:update
+ → order:cancel
+
+十六、HITL
+当：
+decision == REQUIRE_APPROVAL
+执行：
+Tool
+ ↓
+Policy
+ ↓
+REQUIRE_APPROVAL
+ ↓
+LangGraph interrupt
+ ↓
+Checkpoint
+ ↓
+WAITING_APPROVAL
+API：
+POST /runs/{run_id}/approve
+或者：
+POST /runs/{run_id}/reject
+批准：
+Approval
+ ↓
+Resume
+ ↓
+Tool Execute
+
+十七、模块六：Runtime
+负责 Agent Run 生命周期。
+CREATED
+ ↓
+RUNNING
+ ↓
+PLANNING
+ ↓
+EXECUTING
+ ↓
+WAITING_APPROVAL
+ ↓
+RUNNING
+ ↓
+COMPLETED
+异常：
+FAILED
+CANCELLED
+TIMEOUT
+
+十八、RunManager
+class RunManager:
+
+    async def create_run(...):
+        ...
+
+    async def start_run(...):
+        ...
+
+    async def cancel_run(...):
+        ...
+
+    async def resume_run(...):
+        ...
+
+    async def get_run(...):
+        ...
+
+十九、Checkpoint
+这里不要自己实现底层 checkpoint。
+直接利用：
+LangGraph Checkpointer
+你的系统只保存：
+Run
+Agent
+Tenant
+User
+Status
+Checkpoint ID
+CreatedAt
+UpdatedAt
+例如：
+Run #1001
+
+agent:
+europe-order-agent
+
+status:
+WAITING_APPROVAL
+
+checkpoint:
+cp-8921
+
+二十、模块七：Context Engine
+负责每次 LLM 调用前构造 Context。
+Task
+ +
+Conversation
+ +
+Memory
+ +
+RAG
+ +
+Skills
+ +
+Tool Result
+ +
+System Policy
+        ↓
+Context Builder
+        ↓
+Token Budget
+        ↓
+LLM
+
+二十一、Context Priority
+建议：
+P0 System Policy
+P1 Current Task
+P2 Tool Results
+P3 Relevant RAG
+P4 Relevant Memory
+P5 Conversation History
+当 Token 不够：
+P0/P1
+ ↓
+必须保留
+
+P5
+ ↓
+优先压缩
+DeepAgents 的 Summarization 可以作为底层实现。
+
+二十二、Memory
+第一版：
+Short Term Memory
+Long Term Memory
+Short Term：
+当前 Run
+当前 Task
+Tool Result
+Conversation
+Long Term：
+用户偏好
+历史任务
+Agent 学到的信息
+业务知识
+接口：
+class MemoryManager:
+
+    async def recall(...):
+        ...
+
+    async def store(...):
+        ...
+
+二十三、RAG
+第一版不要自己造完整 RAG Framework。
+定义接口：
+class Retriever:
+
+    async def retrieve(
+        self,
+        query,
+        top_k=5
+    ):
+        ...
+以后可以接：
+Milvus
+pgvector
+Elasticsearch
+OpenSearch
+
+二十四、模块八：Observability
+必须能看到：
+Agent Run
+    │
+    ├── Planner
+    │
+    ├── LLM
+    │
+    ├── RAG
+    │
+    ├── Tool
+    │
+    ├── Retry
+    │
+    ├── Replan
+    │
+    ├── HITL
+    │
+    └── Final
+
+二十五、Trace 数据模型
+class TraceSpan:
+
+    trace_id: str
+    span_id: str
+    parent_span_id: str | None
+
+    run_id: str
+
+    component: str
+
+    start_time: datetime
+    end_time: datetime
+
+    status: str
+
+    input: dict
+    output: dict
+
+    metadata: dict
+Component：
+AGENT
+PLANNER
+LLM
+TOOL
+RAG
+MEMORY
+REPLAN
+APPROVAL
+
+二十六、Metrics
+至少：
+Agent Success Rate
+
+Task Success Rate
+
+Tool Success Rate
+
+Tool Retry Rate
+
+Replan Rate
+
+Human Approval Rate
+
+Average Latency
+
+P95
+
+P99
+
+Token Usage
+
+Estimated Cost
+
+Policy Denied Count
+
+二十七、Audit
+所有高风险行为必须留下：
+谁
+ ↓
+什么时候
+ ↓
+哪个 Agent
+ ↓
+哪个 Run
+ ↓
+调用哪个 Tool
+ ↓
+什么参数
+ ↓
+Policy 怎么判断
+ ↓
+谁审批
+ ↓
+最终结果
+例如：
+{
+  "event": "tool_execution",
+  "user_id": "u1001",
+  "agent_id": "order-agent",
+  "run_id": "run-001",
+  "tool": "update_order",
+  "decision": "APPROVED",
+  "approver": "manager-001"
+}
+
+二十八、模块九：Evaluation
+Evaluation 不只评 Final Answer。
+分三层：
+Level 1
+最终结果
+
+Level 2
+Agent 行为
+
+Level 3
+系统指标
+
+Level 1
+Answer Accuracy
+Task Success
+Business Correctness
+Level 2
+Tool Selection
+Tool Arguments
+Planning
+Replan
+RAG Retrieval
+Level 3
+Latency
+Cost
+Retry
+Failure
+Policy
+
+二十九、Evaluation Dataset
+例如：
+{
+  "id": "case-001",
+  "input": "分析订单1001异常",
+  "expected_tools": [
+    "query_order",
+    "query_inventory"
+  ],
+  "expected_behavior": "require_approval",
+  "expected_result": "..."
+}
+然后：
+Dataset
+ ↓
+Agent
+ ↓
+Run
+ ↓
+Trace
+ ↓
+Evaluator
+ ↓
+Metrics
+
+三十、完整业务 Demo
+整个项目必须有一个完整 Example：
+European Order Agent
+用户：
+分析欧洲配件订单异常，如果需要修改订单必须经过人工审批。
+
+30.1 Agent
+europe-order-agent
+Tools：
+query_order
+query_inventory
+query_logistics
+update_order
+Skills：
+order-analysis
+inventory-analysis
+logistics-analysis
+
+三十一、完整执行流程
+User
+ ↓
+POST /runs
+ ↓
+RunManager
+ ↓
+Agent Runtime
+ ↓
+DeepAgents
+ ↓
+Planner
+ ↓
+Task Graph
+产生：
+T1 query_order
+T2 query_inventory
+T3 query_logistics
+T4 analyze
+T5 update_order
+其中：
+T1 ─────┐
+        │
+T2 ─────┼──→ T4 ──→ T5
+        │
+T3 ─────┘
+
+三十二、并行执行
+T1 query_order
+T2 query_inventory
+T3 query_logistics
+并行。
+然后：
+T1
+T2
+T3
+ ↓
+T4 analyze
+
+三十三、发现异常
+例如：
+订单：
+100 件
+
+库存：
+80 件
+
+物流：
+已发 20 件
+Agent 判断：
+20 件未发货
+然后：
+T5 update_order
+
+三十四、Policy
+update_order
+ ↓
+Policy
+ ↓
+HIGH_RISK
+ ↓
+REQUIRE_APPROVAL
+
+三十五、HITL
+LangGraph Interrupt
+ ↓
+Checkpoint
+ ↓
+Run = WAITING_APPROVAL
+前端：
+订单：1001
+
+修改内容：
+数量：100 → 80
+
+原因：
+库存不足
+
+[批准] [拒绝]
+
+三十六、Approve
+POST /runs/run-001/approve
+↓
+Resume
+ ↓
+update_order
+ ↓
+verify_order
+ ↓
+Success
+
+三十七、最终 Trace
+Run #001
+│
+├── Planner             300ms
+│
+├── query_order         400ms
+│
+├── query_inventory     300ms
+│
+├── query_logistics     500ms
+│
+├── analyze             800ms
+│
+├── Policy              2ms
+│
+├── HITL                32s
+│
+├── update_order        600ms
+│
+└── verify              200ms
+最终：
+Task Success
+Policy Audit
+Trace
+Cost
+Evaluation
+全部存在。
+
+三十八、API 设计
+第一版只需要几个 API。
+Agent
+POST /v1/agents
+GET  /v1/agents
+GET  /v1/agents/{agent_id}
+
+Run
+POST /v1/runs
+
+GET /v1/runs/{run_id}
+
+POST /v1/runs/{run_id}/cancel
+
+POST /v1/runs/{run_id}/resume
+
+Approval
+POST /v1/runs/{run_id}/approve
+
+POST /v1/runs/{run_id}/reject
+
+Trace
+GET /v1/runs/{run_id}/trace
+
+三十九、技术栈
+推荐：
+Python 3.12+
+
+FastAPI
+Pydantic
+
+DeepAgents
+LangChain
+LangGraph
+
+PostgreSQL
+Redis
+
+pgvector / Milvus
+
+OpenTelemetry
+
+Pytest
+
+uv
+第一阶段甚至可以：
+PostgreSQL
+Redis
+先不引入太多基础设施。
+
+四十、数据库核心表
+第一版：
+agents
+agent_versions
+
+runs
+
+tasks
+task_dependencies
+
+tools
+tool_permissions
+
+policies
+roles
+role_permissions
+
+approvals
+
+memory
+
+traces
+trace_spans
+
+evaluation_datasets
+evaluation_runs
+
+audit_logs
+
+四十一、最重要的数据关系
+Agent
+  │
+  └── AgentVersion
+          │
+          ↓
+         Run
+          │
+     ┌────┼────┐
+     ↓    ↓    ↓
+   Task  Task  Task
+     │
+     ↓
+   Tool
+     │
+     ↓
+  Policy
+     │
+     ↓
+ Approval
+
+四十二、开发阶段规划
+不要一次全部实现。
+Phase 1：Agent Runtime
+目标：
+DeepAgents
++
+LangGraph
++
+RunManager
++
+API
++
+Trace
+完成：
+POST /runs
+ ↓
+DeepAgent
+ ↓
+Tool
+ ↓
+Final
+
+四十三、Phase 2：Tool Gateway
+实现：
+Registry
+Router
+Validator
+Executor
+完整：
+LLM
+ ↓
+Gateway
+ ↓
+Tool
+
+四十四、Phase 3：Policy
+增加：
+Identity
+RBAC
+Policy
+Risk
+流程：
+Tool
+ ↓
+Policy
+ ↓
+ALLOW / DENY
+
+四十五、Phase 4：HITL
+加入：
+REQUIRE_APPROVAL
+ ↓
+Interrupt
+ ↓
+Checkpoint
+ ↓
+Approve
+ ↓
+Resume
+这是第一个非常重要的“企业级能力”。
+
+四十六、Phase 5：Task Orchestration
+实现：
+Task
+DAG
+Dependency
+Parallel
+Scheduler
+然后：
+Failure
+ ↓
+Retry
+ ↓
+Replan
+
+四十七、Phase 6：Context / Memory / RAG
+实现：
+Context Builder
+Memory Manager
+Retriever
+Token Budget
+并与 DeepAgents Context 能力结合。
+
+四十八、Phase 7：Observability
+实现：
+Trace
+Metrics
+Cost
+Audit
+
+四十九、Phase 8：Evaluation
+实现：
+Dataset
+Runner
+Evaluator
+Metrics
+
+五十、Phase 9：完整 Demo
+最终必须跑通：
+欧洲配件订单异常
+        ↓
+Planner
+        ↓
+Task DAG
+        ↓
+Parallel Tools
+        ↓
+RAG
+        ↓
+Analysis
+        ↓
+Policy
+        ↓
+HITL
+        ↓
+Checkpoint
+        ↓
+Resume
+        ↓
+Tool Execute
+        ↓
+Verify
+        ↓
+Trace
+        ↓
+Audit
+        ↓
+Eval
+
+五十一、项目验收标准
+最终不能用：
+“代码写完了”
+作为完成标准。
+必须满足下面这些。
+Agent
+●  DeepAgents Agent 可以运行 
+●  Agent Loop 正常 
+●  Tool Calling 正常 
+●  SubAgent 正常 
+Runtime
+●  Run 创建 
+●  State 保存 
+●  Checkpoint 
+●  Interrupt 
+●  Resume 
+●  Cancel 
+●  Recovery 
+Tool
+●  Registry 
+●  Schema Validation 
+●  Router 
+●  Executor 
+●  MCP 
+Security
+●  Identity 
+●  RBAC 
+●  Policy 
+●  Risk Level 
+●  Approval 
+Planning
+●  Task 
+●  DAG 
+●  Parallel 
+●  Retry 
+●  Replan 
+Context
+●  Memory 
+●  RAG 
+●  Context Builder 
+●  Token Budget 
+Observability
+●  Trace 
+●  Metrics 
+●  Cost 
+●  Audit 
+Evaluation
+●  Dataset 
+●  Evaluation Runner 
+●  Tool Accuracy 
+●  Task Success 
+●  Latency / Cost 
+
+五十二、最终能力模型
+最终你的项目应该可以这样描述：
+Enterprise Agent Harness
+                            │
+       ┌────────────────────┼────────────────────┐
+       ↓                    ↓                    ↓
+  Agent Capability       Runtime              Governance
+       │                    │                    │
+  DeepAgents            LangGraph             自研
+       │                    │                    │
+  ├─ Loop               ├─ State             ├─ Policy
+  ├─ Middleware         ├─ Graph             ├─ RBAC
+  ├─ SubAgent           ├─ Checkpoint         ├─ HITL
+  ├─ Skills             ├─ Interrupt          ├─ Audit
+  ├─ Filesystem         ├─ Resume             ├─ Tenant
+  └─ Context            └─ Durable            └─ Version
+                            │
+                            │
+                    Enterprise Layer
+                            │
+       ┌────────────────────┼────────────────────┐
+       ↓                    ↓                    ↓
+ Tool Gateway          Task Engine          Observability
+       │                    │                    │
+ Registry              Planner              Trace
+ MCP                   DAG                   Metrics
+ Policy                Retry                 Cost
+ Validation             Replan                Eval
+
+五十三、最终简历项目描述
+等项目做完，你可以把它写成：
+Enterprise Agent Harness / Agent Runtime Platform
+基于 LangGraph Durable Runtime、LangChain Agent 抽象及 DeepAgents Harness 能力，设计并实现企业级 Agent Runtime Platform。通过 Agent Adapter 解耦底层 Agent Framework，在上层构建统一 Tool Gateway、Task DAG、Policy Engine、RBAC、Human-in-the-loop、Failure Recovery、Replanning、Memory/RAG、Trace、Audit 与 Evaluation 能力，实现 Agent 从任务规划、工具执行、权限控制、人工审批到故障恢复和结果评估的完整运行闭环。
+然后面试的时候可以重点讲：
+为什么需要 Harness？
+        ↓
+为什么复用 DeepAgents？
+        ↓
+DeepAgents 负责什么？
+        ↓
+LangGraph 负责什么？
+        ↓
+你自己解决了什么？
+        ↓
+Tool Gateway 怎么设计？
+        ↓
+Policy 怎么控制 Tool？
+        ↓
+HITL 怎么和 Checkpoint 结合？
+        ↓
+Failure 怎么 Retry / Replan？
+        ↓
+Task DAG 怎么调度？
+        ↓
+Trace 怎么设计？
+        ↓
+如何 Evaluation？
+
+五十四、你接下来真正的第一步
+不要马上开始写所有目录。
+第一阶段只做这 5 个东西：
+① AgentRuntime
+
+② DeepAgentRuntime
+
+③ RunManager
+
+④ ToolGateway
+
+⑤ Trace
+先实现：
+POST /v1/runs
+       ↓
+RunManager
+       ↓
+DeepAgentRuntime
+       ↓
+DeepAgents
+       ↓
+ToolGateway
+       ↓
+Tool
+       ↓
+Result
+       ↓
+Trace
+把这个最小闭环跑通：
+┌──────────────┐
+│ POST /runs   │
+└──────┬───────┘
+	   ↓
+ RunManager
+	   ↓
+AgentRuntime
+	   ↓
+DeepAgentRuntime
+	   ↓
+   DeepAgents
+	   ↓
+ Tool Gateway
+	   ↓
+	 Tool
+	   ↓
+   Result
+	   ↓
+	Trace
+	   ↓
+  Run Result
+然后再一层一层加入 Policy → HITL → Checkpoint → Task DAG → Replan → Memory/RAG → Eval → Governance。
+这样做最大的好处是：每一个 Phase 都是可运行的，不会陷入“先把整个框架写完才能运行”的陷阱。
+而且你之前已经把 DeepAgents 的核心源码路线研究到 create_agent → Graph → Loop → Middleware → Todo → Filesystem → SubAgent，所以现在这份需求文档可以直接作为你从“源码学习”进入“架构实现”的分界线。

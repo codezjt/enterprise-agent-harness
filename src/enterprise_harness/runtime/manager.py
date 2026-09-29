@@ -23,6 +23,11 @@ from enterprise_harness.runtime.recovery import RecoveryManager
 from enterprise_harness.orchestration.replanner import Replanner
 from enterprise_harness.orchestration.replanner import SimpleReplanner
 
+from enterprise_harness.observability import (
+    MetricCollector,
+    TraceManager,
+)
+
 class RunManager:
 
     def __init__(
@@ -31,6 +36,7 @@ class RunManager:
         trace_manager: TraceManager | None = None,
         replanner: Replanner | None = None,
         max_replans: int = 1,
+        metric_collector: MetricCollector | None = None,
     ):
         self.runs: dict[str, Run] = {}
 
@@ -55,6 +61,8 @@ class RunManager:
             replanner=replanner or SimpleReplanner(),
             max_replans=max_replans,
         )
+
+        self.metric_collector = metric_collector
 
     async def create_run(
         self,
@@ -325,6 +333,11 @@ class RunManager:
             if result_graph.has_failed():
                 run.status = RunStatus.FAILED
 
+                if self.metric_collector is not None:
+                    self.metric_collector.record_task(
+                        success=False
+                    )
+
                 failed_tasks = [
                     task
                     for task in result_graph.tasks()
@@ -337,6 +350,11 @@ class RunManager:
                 )
             else:
                 run.status = RunStatus.COMPLETED
+
+                if self.metric_collector is not None:
+                    self.metric_collector.record_task(
+                        success=True
+                    )
 
             if run_context.trace_root_span_id:
                 self.trace_manager.finish_span(
@@ -421,6 +439,11 @@ class RunManager:
             if result_graph.has_failed():
                 run.status = RunStatus.FAILED
 
+                if self.metric_collector is not None:
+                    self.metric_collector.record_task(
+                        success=False
+                    )
+
                 failed_tasks = [
                     task
                     for task in result_graph.tasks()
@@ -433,6 +456,11 @@ class RunManager:
                 )
             else:
                 run.status = RunStatus.COMPLETED
+
+                if self.metric_collector is not None:
+                    self.metric_collector.record_task(
+                        success=True
+                    )
 
             if run_context.trace_root_span_id:
                 self.trace_manager.finish_span(

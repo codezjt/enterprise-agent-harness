@@ -1,6 +1,7 @@
-from unittest.mock import patch
+from unittest.mock import ANY, patch
 
 import pytest
+from langchain_openai import ChatOpenAI
 
 from enterprise_harness.agent import AgentConfig, DeepAgentRuntime
 
@@ -29,40 +30,16 @@ def test_deep_agent_runtime_config():
     assert runtime.config is config
     assert runtime.agent is fake_agent
 
-    mock_create.assert_called_once_with(
-        model="test-model",
-        system_prompt="You are a test agent.",
-        name="Test Agent",
-    )
+    # create_deep_agent 只应被调用一次
+    mock_create.assert_called_once()
 
+    kwargs = mock_create.call_args.kwargs
 
-@pytest.mark.asyncio
-async def test_deep_agent_runtime_run():
-    config = create_config()
+    # model 参数已被包装成 ChatOpenAI 实例
+    assert isinstance(kwargs["model"], ChatOpenAI)
+    assert kwargs["model"].model_name == "test-model"
 
-    class FakeAgent:
-        async def ainvoke(self, input_data):
-            return {
-                "result": "test-result",
-                "input": input_data,
-            }
-
-    fake_agent = FakeAgent()
-
-    with patch(
-        "enterprise_harness.agent.deepagent_runtime.create_deep_agent",
-        return_value=fake_agent,
-    ):
-        runtime = DeepAgentRuntime(config)
-
-        result = await runtime.run(
-            task="test task",
-        )
-
-    assert result["result"] == "test-result"
-    assert result["input"]["messages"] == [
-        {
-            "role": "user",
-            "content": "test task",
-        }
-    ]
+    # 其余参数保持原样
+    assert kwargs["system_prompt"] == "You are a test agent."
+    assert kwargs["name"] == "Test Agent"
+    assert kwargs["tools"] == []

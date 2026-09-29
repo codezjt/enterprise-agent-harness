@@ -4,25 +4,25 @@ from typing import Any
 
 from deepagents import create_deep_agent
 
+from enterprise_harness.context import (
+    ContextBuilder,
+    ContextProvider,
+)
 from enterprise_harness.gateway.deepagent import DeepAgentToolAdapter
 from enterprise_harness.gateway.gateway import ToolGateway
+from enterprise_harness.observability import MetricCollector
 from enterprise_harness.runtime.context import RunContext
 
 from .config import AgentConfig
 from .model import resolve_model
 from .runtime import AgentRuntime
-from enterprise_harness.context import ContextBuilder
-from enterprise_harness.context import (
-    ContextBuilder,
-    ContextProvider,
-)
-
+import time
 
 class DeepAgentRuntime(AgentRuntime):
     """
     基于 DeepAgents 的 AgentRuntime 实现。
 
-    Agent 本身可以复用；
+    Agent 本身可以复用，
     RunContext 在每次执行时注入。
     """
 
@@ -34,8 +34,12 @@ class DeepAgentRuntime(AgentRuntime):
         principal=None,
         context_builder=None,
         context_provider=None,
+        metric_collector: MetricCollector | None = None,
     ):
-        super().__init__(config)
+        super().__init__(
+            config,
+            metric_collector=metric_collector,
+        )
 
         self.tool_gateway = tool_gateway
         self.tools = tools or []
@@ -50,12 +54,13 @@ class DeepAgentRuntime(AgentRuntime):
             system_prompt=config.system_prompt,
             name=config.name,
         )
+
         self.principal = principal
 
         self.context_builder = context_builder or ContextBuilder()
 
         self.context_provider = (
-                context_provider or ContextProvider()
+            context_provider or ContextProvider()
         )
 
     async def run(
@@ -75,20 +80,43 @@ class DeepAgentRuntime(AgentRuntime):
 
         if context:
             input_data["context"] = context
+        start_time = time.perf_counter()
+        try:
+            result = await self.agent.ainvoke(
+                input_data
+            )
 
-        return await self.agent.ainvoke(
-            input_data
-        )
+            if self.metric_collector is not None:
+                self.metric_collector.record_agent_run(
+                    success=True
+                )
+                latency_ms = (
+                                     time.perf_counter() - start_time
+                             ) * 1000
+
+                self.metric_collector.record_latency(
+                    latency_ms
+                )
+
+            return result
+
+        except Exception:
+            if self.metric_collector is not None:
+                self.metric_collector.record_agent_run(
+                    success=False
+                )
+
+            raise
 
     async def run_with_context(
-            self,
-            run_context: RunContext,
+        self,
+        run_context: RunContext,
     ):
         agent_tools = list(self.tools)
 
         if (
-                self.tool_gateway is not None
-                and self.config.tools
+            self.tool_gateway is not None
+            and self.config.tools
         ):
             definitions = [
                 self.tool_gateway.registry.get(tool_name)
@@ -156,12 +184,35 @@ class DeepAgentRuntime(AgentRuntime):
                 ]
             },
         }
+        start_time = time.perf_counter()
+        try:
+            result = await agent.ainvoke(input_data)
 
-        return await agent.ainvoke(input_data)
+            if self.metric_collector is not None:
+                self.metric_collector.record_agent_run(
+                    success=True
+                )
+                latency_ms = (
+                                     time.perf_counter() - start_time
+                             ) * 1000
+
+                self.metric_collector.record_latency(
+                    latency_ms
+                )
+
+            return result
+
+        except Exception:
+            if self.metric_collector is not None:
+                self.metric_collector.record_agent_run(
+                    success=False
+                )
+
+            raise
 
     def _format_context(
-            self,
-            items,
+        self,
+        items,
     ) -> str:
         sections = []
 
