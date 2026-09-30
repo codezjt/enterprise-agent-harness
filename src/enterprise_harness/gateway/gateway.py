@@ -102,7 +102,18 @@ class ToolGateway:
         start_time = time.perf_counter()
         span = None
 
-        if self.trace_manager is not None and run_id is not None:
+        if run_id is None and approval_id is not None:
+            try:
+                existing = await self.approval_manager.get_request(approval_id)
+                run_id = existing.run_id
+            except (KeyError, AttributeError):
+                pass
+
+        if run_id is None:
+            import uuid as _uuid
+            run_id = f"api-{_uuid.uuid4().hex[:12]}"
+
+        if self.trace_manager is not None:
             span = self.trace_manager.start_span(
                 run_id=run_id,
                 span_type=SpanType.TOOL,
@@ -219,10 +230,6 @@ class ToolGateway:
                         run_id=run_id,
                         tool_name=tool.name,
                         arguments=validated_arguments,
-                        message=(
-                            f"Tool execution requires approval: "
-                            f"{tool.name}"
-                        ),
                     )
 
             # 6. Execute

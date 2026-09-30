@@ -24,7 +24,7 @@ class ApprovalRequiredError(PermissionError):
             message
             or (
                 "Tool execution requires approval: "
-                f"{tool_name}"
+                f"{tool_name} (approval_id={approval_id})"
             )
         )
 

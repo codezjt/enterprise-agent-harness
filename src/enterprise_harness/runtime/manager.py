@@ -25,7 +25,13 @@ from .context_builder import RunContextBuilder
 from .langgraph_runtime import LangGraphRuntime
 from .models import Run, RunStatus
 from .agent_runtime_adapter import AgentRuntimeAdapter
-
+from enterprise_harness.runtime.langgraph_runtime_adapter import (
+    LangGraphRuntimeAdapter,
+)
+from enterprise_harness.runtime.result import (
+    RuntimeResult,
+    RuntimeStatus,
+)
 
 class RunManager:
 
@@ -63,6 +69,12 @@ class RunManager:
 
         self.metric_collector = metric_collector
 
+        self.langgraph_runtime_adapter = (
+            LangGraphRuntimeAdapter(langgraph_runtime)
+            if langgraph_runtime is not None
+            else None
+        )
+
     async def create_run(
         self,
         agent_id: str,
@@ -78,61 +90,8 @@ class RunManager:
         )
 
         self.runs[run.run_id] = run
-
         return run
 
-    # async def start_run(
-    #     self,
-    #     run_id: str,
-    #     runtime: AgentRuntime,
-    #     principal: Principal | None = None,
-    # ) -> Run:
-    #
-    #     run = self._get_run(run_id)
-    #
-    #     run.status = RunStatus.RUNNING
-    #     run.started_at = datetime.now(
-    #         timezone.utc
-    #     )
-    #
-    #     run_context = self.context_builder.build(
-    #         run,
-    #         principal=principal,
-    #     )
-    #
-    #     try:
-    #
-    #         result = await runtime.run_with_context(
-    #             run_context
-    #         )
-    #
-    #         run.result = result
-    #         run.status = RunStatus.COMPLETED
-    #
-    #         self.trace_manager.finish_span(
-    #             run_context.trace_root_span_id,
-    #             output=result,
-    #         )
-    #
-    #     except Exception as exc:
-    #
-    #         run.status = RunStatus.FAILED
-    #         run.error = str(exc)
-    #
-    #         if run_context.trace_root_span_id:
-    #
-    #             self.trace_manager.fail_span(
-    #                 run_context.trace_root_span_id,
-    #                 exc,
-    #             )
-    #
-    #     finally:
-    #
-    #         run.completed_at = (
-    #             datetime.now(timezone.utc)
-    #         )
-    #
-    #     return run
     async def start_run(
             self,
             run_id: str,
@@ -227,11 +186,11 @@ class RunManager:
         return run
 
     async def start_langgraph_run(
-        self,
-        run_id: str,
+            self,
+            run_id: str,
     ) -> Run:
 
-        if self.langgraph_runtime is None:
+        if self.langgraph_runtime_adapter is None:
             raise RuntimeError(
                 "LangGraph runtime is not configured"
             )
@@ -244,28 +203,20 @@ class RunManager:
             timezone.utc
         )
 
-        try:
+        run_context = self.context_builder.build(
+            run,
+        )
 
-            result = (
-                await self.langgraph_runtime.run(
-                    run_id=run.run_id,
-                    task=run.task,
-                    context=run.context,
+        try:
+            runtime_result = (
+                await self.langgraph_runtime_adapter.run(
+                    run_context
                 )
             )
 
             self._apply_runtime_result(
                 run,
-                result,
-            )
-
-            # WAITING_APPROVAL 不是最终状态，
-            # 此时不能设置 completed_at。
-            if run.status == RunStatus.WAITING_APPROVAL:
-                return run
-
-            run.completed_at = (
-                datetime.now(timezone.utc)
+                runtime_result,
             )
 
         except Exception as exc:
@@ -273,6 +224,7 @@ class RunManager:
             run.status = RunStatus.FAILED
             run.error = str(exc)
 
+        if run.status != RunStatus.WAITING_APPROVAL:
             run.completed_at = (
                 datetime.now(timezone.utc)
             )
@@ -280,12 +232,11 @@ class RunManager:
         return run
 
     async def resume_run(
-        self,
-        run_id: str,
-        value: Any,
+            self,
+            run_id: str,
+            value: Any,
     ) -> Run:
-
-        if self.langgraph_runtime is None:
+        if self.langgraph_runtime_adapter is None:
             raise RuntimeError(
                 "LangGraph runtime is not configured"
             )
@@ -300,37 +251,29 @@ class RunManager:
 
         run.status = RunStatus.RUNNING
 
-        try:
+        run_context = self.context_builder.build(
+            run,
+        )
 
-            result = (
-                await self.langgraph_runtime.resume(
-                    run_id=run.run_id,
-                    value=value,
+        try:
+            runtime_result = (
+                await self.langgraph_runtime_adapter.resume(
+                    run_context,
+                    value,
                 )
             )
 
             self._apply_runtime_result(
                 run,
-                result,
-            )
-
-            # 如果恢复后又遇到了下一次审批，
-            # Run 继续保持 WAITING_APPROVAL。
-            if run.status == RunStatus.WAITING_APPROVAL:
-                return run
-
-            run.completed_at = (
-                datetime.now(timezone.utc)
+                runtime_result,
             )
 
         except Exception as exc:
-
             run.status = RunStatus.FAILED
             run.error = str(exc)
 
-            run.completed_at = (
-                datetime.now(timezone.utc)
-            )
+        if run.status != RunStatus.WAITING_APPROVAL:
+            run.completed_at = datetime.now(timezone.utc)
 
         return run
 
@@ -604,60 +547,32 @@ class RunManager:
         return run
 
     def _apply_runtime_result(
-        self,
-        run: Run,
-        result: dict[str, Any],
+            self,
+            run: Run,
+            result: RuntimeResult,
     ) -> None:
-
-        if (
-            self.langgraph_runtime is not None
-            and self.langgraph_runtime.is_interrupted(
-                result
-            )
-        ):
-
-            approval = (
-                self.langgraph_runtime.extract_approval(
-                    result
-                )
-            )
-
-            if approval is None:
-                raise RuntimeError(
-                    "LangGraph runtime was interrupted "
-                    "but no approval information was found"
-                )
-
-            approval_id = approval.get(
-                "approval_id"
-            )
-
-            if not approval_id:
-                raise RuntimeError(
-                    "Approval interruption does not "
-                    "contain approval_id"
-                )
-
-            run.approval_id = approval_id
-            run.status = (
-                RunStatus.WAITING_APPROVAL
-            )
-
+        if result.status == RuntimeStatus.WAITING_APPROVAL:
+            run.status = RunStatus.WAITING_APPROVAL
+            run.approval_id = result.approval_id
+            run.checkpoint_id = result.checkpoint_id
             return
 
-        if self.langgraph_runtime is not None:
+        if result.status == RuntimeStatus.COMPLETED:
+            run.result = result.result
+            run.status = RunStatus.COMPLETED
+            run.approval_id = None
+            run.checkpoint_id = result.checkpoint_id
+            return
 
-            run.result = (
-                self.langgraph_runtime.extract_result(
-                    result
-                )
-            )
+        if result.status == RuntimeStatus.FAILED:
+            run.status = RunStatus.FAILED
+            run.error = result.error
+            return
 
-        else:
+        if result.status == RuntimeStatus.CANCELLED:
+            run.status = RunStatus.CANCELLED
+            return
 
-            run.result = result
-
-        run.status = RunStatus.COMPLETED
-
-        # 审批已经完成，不再保留旧 approval_id。
-        run.approval_id = None
+        raise ValueError(
+            f"Unsupported runtime result status: {result.status}"
+        )

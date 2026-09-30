@@ -31,6 +31,11 @@ class AgentTaskExecutor:
 
         task_context["task_id"] = task.task_id
         task_context["task_name"] = task.name
+        task_context["_run_id"] = self.run_context.run_id
+        task_context["_agent_id"] = self.run_context.agent_id
+
+        if self.run_context.principal is not None:
+            task_context["_principal"] = self.run_context.principal
 
         if task.input:
             task_context["task_input"] = dict(
