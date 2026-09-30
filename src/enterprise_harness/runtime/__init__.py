@@ -37,7 +37,8 @@ __all__ = [
     "Runtime",
     "RuntimeResult",
     "RuntimeStatus",
-    "RunManager"
+    "RunManager",
+    "LangGraphRuntimeAdapter",
 ]
 
 
@@ -50,6 +51,12 @@ def __getattr__(name: str):
         from .manager import RunManager
 
         return RunManager
+    if name == "LangGraphRuntimeAdapter":
+        from .langgraph_runtime_adapter import (
+            LangGraphRuntimeAdapter,
+        )
+
+        return LangGraphRuntimeAdapter
     raise AttributeError(
         f"module {__name__!r} has no attribute {name!r}"
     )
