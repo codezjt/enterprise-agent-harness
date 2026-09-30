@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from typing import Any
+from uuid import uuid4
 
 from .trace import SpanStatus, SpanType, TraceSpan
 
@@ -39,13 +40,20 @@ class TraceManager:
         metadata: dict[str, Any] | None = None,
     ) -> TraceSpan:
 
+        trace_id = str(uuid4())
+
         span = TraceSpan(
-            run_id=run_id,
+            trace_id=trace_id,
+            span_id=str(uuid4()),
             parent_span_id=parent_span_id,
-            span_type=span_type,
-            name=name,
+            run_id=run_id,
+            component=span_type,
+            start_time=datetime.now(timezone.utc),
             input=input,
-            metadata=metadata or {},
+            metadata={
+                **(metadata or {}),
+                "name": name,
+            },
         )
 
         self._spans[span.span_id] = span
@@ -63,10 +71,13 @@ class TraceManager:
 
         span = self.get_span(span_id)
 
-        span.output = output
-        span.status = status
-        span.error = error
-        span.ended_at = datetime.now(timezone.utc)
+        span.finish(
+            status=status,
+            output=output,
+        )
+
+        if error is not None:
+            span.metadata["error"] = error
 
         return span
 

@@ -24,6 +24,7 @@ from enterprise_harness.runtime.recovery import RecoveryManager
 from .context_builder import RunContextBuilder
 from .langgraph_runtime import LangGraphRuntime
 from .models import Run, RunStatus
+from .agent_runtime_adapter import AgentRuntimeAdapter
 
 
 class RunManager:
@@ -80,11 +81,63 @@ class RunManager:
 
         return run
 
+    # async def start_run(
+    #     self,
+    #     run_id: str,
+    #     runtime: AgentRuntime,
+    #     principal: Principal | None = None,
+    # ) -> Run:
+    #
+    #     run = self._get_run(run_id)
+    #
+    #     run.status = RunStatus.RUNNING
+    #     run.started_at = datetime.now(
+    #         timezone.utc
+    #     )
+    #
+    #     run_context = self.context_builder.build(
+    #         run,
+    #         principal=principal,
+    #     )
+    #
+    #     try:
+    #
+    #         result = await runtime.run_with_context(
+    #             run_context
+    #         )
+    #
+    #         run.result = result
+    #         run.status = RunStatus.COMPLETED
+    #
+    #         self.trace_manager.finish_span(
+    #             run_context.trace_root_span_id,
+    #             output=result,
+    #         )
+    #
+    #     except Exception as exc:
+    #
+    #         run.status = RunStatus.FAILED
+    #         run.error = str(exc)
+    #
+    #         if run_context.trace_root_span_id:
+    #
+    #             self.trace_manager.fail_span(
+    #                 run_context.trace_root_span_id,
+    #                 exc,
+    #             )
+    #
+    #     finally:
+    #
+    #         run.completed_at = (
+    #             datetime.now(timezone.utc)
+    #         )
+    #
+    #     return run
     async def start_run(
-        self,
-        run_id: str,
-        runtime: AgentRuntime,
-        principal: Principal | None = None,
+            self,
+            run_id: str,
+            runtime: AgentRuntime,
+            principal: Principal | None = None,
     ) -> Run:
 
         run = self._get_run(run_id)
@@ -99,19 +152,60 @@ class RunManager:
             principal=principal,
         )
 
+        adapter = AgentRuntimeAdapter(runtime)
+
         try:
 
-            result = await runtime.run_with_context(
+            runtime_result = await adapter.run(
                 run_context
             )
 
-            run.result = result
-            run.status = RunStatus.COMPLETED
+            if runtime_result.is_failed:
 
-            self.trace_manager.finish_span(
-                run_context.trace_root_span_id,
-                output=result,
-            )
+                run.status = RunStatus.FAILED
+                run.error = runtime_result.error
+
+                if run_context.trace_root_span_id:
+                    self.trace_manager.fail_span(
+                        run_context.trace_root_span_id,
+                        RuntimeError(
+                            runtime_result.error
+                            or "Agent runtime failed"
+                        ),
+                    )
+
+            elif runtime_result.is_cancelled:
+
+                run.status = RunStatus.CANCELLED
+                run.result = runtime_result.result
+
+                if run_context.trace_root_span_id:
+                    self.trace_manager.finish_span(
+                        run_context.trace_root_span_id,
+                        output=runtime_result.result,
+                    )
+
+            elif runtime_result.is_waiting_approval:
+
+                run.status = RunStatus.WAITING_APPROVAL
+                run.result = runtime_result.result
+
+                if runtime_result.approval_id is not None:
+                    run.approval_id = runtime_result.approval_id
+
+                if runtime_result.checkpoint_id is not None:
+                    run.checkpoint_id = runtime_result.checkpoint_id
+
+            else:
+
+                run.result = runtime_result.result
+                run.status = RunStatus.COMPLETED
+
+                if run_context.trace_root_span_id:
+                    self.trace_manager.finish_span(
+                        run_context.trace_root_span_id,
+                        output=runtime_result.result,
+                    )
 
         except Exception as exc:
 
@@ -119,7 +213,6 @@ class RunManager:
             run.error = str(exc)
 
             if run_context.trace_root_span_id:
-
                 self.trace_manager.fail_span(
                     run_context.trace_root_span_id,
                     exc,
