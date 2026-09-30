@@ -100,3 +100,86 @@ async def test_resume_after_approval():
 
     assert not runtime.is_interrupted(result)
     assert runtime.extract_result(result) == "completed"
+
+
+@pytest.mark.asyncio
+async def test_execute_node_preserves_dict_result():
+    async def execute(state):
+        return {
+            "order_id": "1001",
+            "quantity": 80,
+            "updated": True,
+        }
+
+    runtime = LangGraphRuntime(
+        execute=execute,
+    )
+
+    result = await runtime._execute_node(
+        {
+            "context": {},
+            "result": None,
+            "approval": None,
+            "approval_id": None,
+            "waiting_for_approval": False,
+        }
+    )
+
+    assert result == {
+        "result": {
+            "order_id": "1001",
+            "quantity": 80,
+            "updated": True,
+        }
+    }
+
+
+@pytest.mark.asyncio
+async def test_execute_node_wraps_plain_result():
+    async def execute(state):
+        return {
+            "order_id": "1001",
+            "quantity": 80,
+            "updated": True,
+        }
+
+    runtime = LangGraphRuntime(
+        execute=execute,
+    )
+
+    result = await runtime._execute_node(
+        {
+            "task": "update order",
+            "context": {},
+        }
+    )
+
+    assert result == {
+        "result": {
+            "order_id": "1001",
+            "quantity": 80,
+            "updated": True,
+        }
+    }
+
+@pytest.mark.asyncio
+async def test_execute_node_preserves_result_envelope():
+    async def execute(state):
+        return {
+            "result": "completed",
+        }
+
+    runtime = LangGraphRuntime(
+        execute=execute,
+    )
+
+    result = await runtime._execute_node(
+        {
+            "task": "update order",
+            "context": {},
+        }
+    )
+
+    assert result == {
+        "result": "completed",
+    }

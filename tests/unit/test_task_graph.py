@@ -1,163 +1,484 @@
+from __future__ import annotations
+
 import pytest
 
-from enterprise_harness.orchestration.task import (
+from enterprise_harness.orchestration import (
     Task,
+    TaskGraph,
     TaskStatus,
 )
-from enterprise_harness.orchestration.task_graph import TaskGraph
 
 
-def build_graph() -> TaskGraph:
+def create_task(
+    task_id: str,
+    name: str | None = None,
+    dependencies: list[str] | None = None,
+) -> Task:
+    return Task(
+        task_id=task_id,
+        name=name or task_id,
+        dependencies=dependencies or [],
+    )
+
+
+def test_add_task():
+    graph = TaskGraph()
+
+    task = create_task("task-1", "Query Order")
+
+    graph.add_task(task)
+
+    assert graph.get_task("task-1") is task
+    assert graph.tasks["task-1"].name == "Query Order"
+
+
+def test_add_duplicate_task_rejected():
     graph = TaskGraph()
 
     graph.add_task(
-        Task(
-            task_id="T1",
-            name="查询订单",
-        )
+        create_task("task-1")
     )
 
-    graph.add_task(
-        Task(
-            task_id="T2",
-            name="查询库存",
-        )
-    )
-
-    graph.add_task(
-        Task(
-            task_id="T3",
-            name="查询物流",
-        )
-    )
-
-    graph.add_task(
-        Task(
-            task_id="T4",
-            name="综合分析",
-        )
-    )
-
-    graph.add_task(
-        Task(
-            task_id="T5",
-            name="更新订单",
-        )
-    )
-
-    graph.add_dependency("T4", "T1")
-    graph.add_dependency("T4", "T2")
-    graph.add_dependency("T4", "T3")
-
-    graph.add_dependency("T5", "T4")
-
-    return graph
-
-
-def test_initial_ready_tasks():
-    graph = build_graph()
-
-    ready_tasks = graph.get_ready_tasks()
-
-    assert {task.task_id for task in ready_tasks} == {
-        "T1",
-        "T2",
-        "T3",
-    }
-
-
-def test_dependency_unlocks_task():
-    graph = build_graph()
-
-    graph.mark_success("T1", {"order_id": "1001"})
-    graph.mark_success("T2", {"stock": 10})
-    graph.mark_success("T3", {"status": "SHIPPED"})
-
-    ready_tasks = graph.get_ready_tasks()
-
-    assert [task.task_id for task in ready_tasks] == ["T4"]
-
-
-def test_next_task_after_analysis():
-    graph = build_graph()
-
-    graph.mark_success("T1")
-    graph.mark_success("T2")
-    graph.mark_success("T3")
-
-    graph.mark_success(
-        "T4",
-        output={"decision": "UPDATE"},
-    )
-
-    ready_tasks = graph.get_ready_tasks()
-
-    assert [task.task_id for task in ready_tasks] == ["T5"]
-
-
-def test_graph_completion():
-    graph = build_graph()
-
-    for task_id in ["T1", "T2", "T3", "T4", "T5"]:
-        graph.mark_success(task_id)
-
-    assert graph.is_completed() is True
-
-
-def test_duplicate_task_rejected():
-    graph = TaskGraph()
-
-    graph.add_task(
-        Task(
-            task_id="T1",
-            name="任务1",
-        )
-    )
-
-    with pytest.raises(ValueError, match="already exists"):
+    with pytest.raises(ValueError, match="Task already exists"):
         graph.add_task(
-            Task(
-                task_id="T1",
-                name="任务1",
-            )
+            create_task("task-1")
+        )
+
+
+def test_add_dependency():
+    graph = TaskGraph()
+
+    graph.add_task(create_task("task-1"))
+    graph.add_task(create_task("task-2"))
+
+    graph.add_dependency(
+        task_id="task-2",
+        dependency_id="task-1",
+    )
+
+    assert graph.get_task("task-2").dependencies == [
+        "task-1"
+    ]
+
+
+def test_add_dependency_unknown_task_rejected():
+    graph = TaskGraph()
+
+    graph.add_task(create_task("task-1"))
+
+    with pytest.raises(
+        KeyError,
+        match="Dependency task not found",
+    ):
+        graph.add_dependency(
+            task_id="task-1",
+            dependency_id="task-999",
         )
 
 
 def test_self_dependency_rejected():
     graph = TaskGraph()
 
+    graph.add_task(create_task("task-1"))
+
+    with pytest.raises(
+        ValueError,
+        match="cannot depend on itself",
+    ):
+        graph.add_dependency(
+            task_id="task-1",
+            dependency_id="task-1",
+        )
+
+
+def test_duplicate_dependency_is_ignored():
+    graph = TaskGraph()
+
+    graph.add_task(create_task("task-1"))
+    graph.add_task(create_task("task-2"))
+
+    graph.add_dependency("task-2", "task-1")
+    graph.add_dependency("task-2", "task-1")
+
+    assert graph.get_task("task-2").dependencies == [
+        "task-1"
+    ]
+
+
+def test_validate_simple_dag():
+    graph = TaskGraph()
+
+    graph.add_task(create_task("task-1"))
     graph.add_task(
-        Task(
-            task_id="T1",
-            name="任务1",
+        create_task(
+            "task-2",
+            dependencies=["task-1"],
+        )
+    )
+    graph.add_task(
+        create_task(
+            "task-3",
+            dependencies=["task-2"],
         )
     )
 
-    with pytest.raises(ValueError, match="cannot depend on itself"):
-        graph.add_dependency("T1", "T1")
+    graph.validate()
 
 
-def test_cycle_dependency_rejected():
+def test_validate_unknown_dependency_rejected():
     graph = TaskGraph()
 
-    graph.add_task(Task(task_id="T1", name="任务1"))
-    graph.add_task(Task(task_id="T2", name="任务2"))
-    graph.add_task(Task(task_id="T3", name="任务3"))
-
-    graph.add_dependency("T2", "T1")
-    graph.add_dependency("T3", "T2")
-
-    with pytest.raises(ValueError, match="contains a cycle"):
-        graph.add_dependency("T1", "T3")
-
-
-def test_failed_task():
-    graph = build_graph()
-
-    graph.mark_failed(
-        "T1",
-        "query order failed",
+    graph.add_task(
+        create_task(
+            "task-1",
+            dependencies=["task-999"],
+        )
     )
 
-    assert graph.get_task("T1").status == TaskStatus.FAILED
-    assert graph.has_failed() is True
+    with pytest.raises(
+        ValueError,
+        match="depends on unknown task",
+    ):
+        graph.validate()
+
+
+def test_validate_self_dependency_rejected():
+    graph = TaskGraph()
+
+    graph.add_task(
+        create_task(
+            "task-1",
+            dependencies=["task-1"],
+        )
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="cannot depend on itself",
+    ):
+        graph.validate()
+
+
+def test_validate_cycle_rejected():
+    graph = TaskGraph()
+
+    graph.add_task(
+        create_task(
+            "task-1",
+            dependencies=["task-3"],
+        )
+    )
+    graph.add_task(
+        create_task(
+            "task-2",
+            dependencies=["task-1"],
+        )
+    )
+    graph.add_task(
+        create_task(
+            "task-3",
+            dependencies=["task-2"],
+        )
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="contains a cycle",
+    ):
+        graph.validate()
+
+
+def test_ready_tasks_initial_parallel_tasks():
+    graph = TaskGraph()
+
+    graph.add_task(create_task("task-1"))
+    graph.add_task(create_task("task-2"))
+
+    graph.add_task(
+        create_task(
+            "task-3",
+            dependencies=["task-1", "task-2"],
+        )
+    )
+
+    graph.validate()
+
+    ready = graph.get_ready_tasks()
+
+    assert [task.task_id for task in ready] == [
+        "task-1",
+        "task-2",
+    ]
+
+
+def test_ready_tasks_after_first_dependency_completed():
+    graph = TaskGraph()
+
+    graph.add_task(create_task("task-1"))
+    graph.add_task(create_task("task-2"))
+
+    graph.add_task(
+        create_task(
+            "task-3",
+            dependencies=["task-1", "task-2"],
+        )
+    )
+
+    graph.mark_running("task-1")
+    graph.mark_completed(
+        "task-1",
+        result="result-1",
+    )
+
+    ready = graph.get_ready_tasks()
+
+    assert [task.task_id for task in ready] == [
+        "task-2"
+    ]
+
+
+def test_ready_tasks_after_all_dependencies_completed():
+    graph = TaskGraph()
+
+    graph.add_task(create_task("task-1"))
+    graph.add_task(create_task("task-2"))
+
+    graph.add_task(
+        create_task(
+            "task-3",
+            dependencies=["task-1", "task-2"],
+        )
+    )
+
+    graph.mark_running("task-1")
+    graph.mark_completed(
+        "task-1",
+        result="result-1",
+    )
+
+    graph.mark_running("task-2")
+    graph.mark_completed(
+        "task-2",
+        result="result-2",
+    )
+
+    ready = graph.get_ready_tasks()
+
+    assert [task.task_id for task in ready] == [
+        "task-3"
+    ]
+
+
+def test_completed_task_is_not_ready():
+    graph = TaskGraph()
+
+    graph.add_task(create_task("task-1"))
+
+    graph.mark_running("task-1")
+    graph.mark_completed(
+        "task-1",
+        result="completed",
+    )
+
+    assert graph.get_ready_tasks() == []
+
+
+def test_running_task_is_not_ready():
+    graph = TaskGraph()
+
+    graph.add_task(create_task("task-1"))
+
+    graph.mark_running("task-1")
+
+    assert graph.get_ready_tasks() == []
+
+
+def test_failed_dependency_blocks_dependent_task():
+    graph = TaskGraph()
+
+    graph.add_task(create_task("task-1"))
+
+    graph.add_task(
+        create_task(
+            "task-2",
+            dependencies=["task-1"],
+        )
+    )
+
+    graph.mark_running("task-1")
+    graph.mark_failed(
+        "task-1",
+        error="query failed",
+    )
+
+    assert graph.get_ready_tasks() == []
+
+
+def test_mark_running_requires_pending():
+    graph = TaskGraph()
+
+    graph.add_task(create_task("task-1"))
+
+    graph.mark_running("task-1")
+
+    with pytest.raises(
+        ValueError,
+        match="cannot transition to RUNNING",
+    ):
+        graph.mark_running("task-1")
+
+
+def test_mark_completed_requires_running():
+    graph = TaskGraph()
+
+    graph.add_task(create_task("task-1"))
+
+    with pytest.raises(
+        ValueError,
+        match="cannot transition to COMPLETED",
+    ):
+        graph.mark_completed(
+            "task-1",
+            result="completed",
+        )
+
+
+def test_mark_failed_requires_running():
+    graph = TaskGraph()
+
+    graph.add_task(create_task("task-1"))
+
+    with pytest.raises(
+        ValueError,
+        match="cannot transition to FAILED",
+    ):
+        graph.mark_failed(
+            "task-1",
+            error="failed",
+        )
+
+
+def test_task_result_and_error_are_updated():
+    graph = TaskGraph()
+
+    graph.add_task(create_task("task-1"))
+
+    graph.mark_running("task-1")
+    graph.mark_completed(
+        "task-1",
+        result={
+            "order_id": "1001",
+            "updated": True,
+        },
+    )
+
+    task = graph.get_task("task-1")
+
+    assert task.status == TaskStatus.COMPLETED
+    assert task.result == {
+        "order_id": "1001",
+        "updated": True,
+    }
+    assert task.error is None
+
+
+def test_mark_failed_sets_error():
+    graph = TaskGraph()
+
+    graph.add_task(create_task("task-1"))
+
+    graph.mark_running("task-1")
+    graph.mark_failed(
+        "task-1",
+        error="tool execution failed",
+    )
+
+    task = graph.get_task("task-1")
+
+    assert task.status == TaskStatus.FAILED
+    assert task.error == "tool execution failed"
+
+
+def test_diamond_graph():
+    """
+    验证典型 DAG：
+
+          task-1
+         /      \
+      task-2   task-3
+         \      /
+          task-4
+    """
+
+    graph = TaskGraph()
+
+    graph.add_task(create_task("task-1"))
+
+    graph.add_task(
+        create_task(
+            "task-2",
+            dependencies=["task-1"],
+        )
+    )
+
+    graph.add_task(
+        create_task(
+            "task-3",
+            dependencies=["task-1"],
+        )
+    )
+
+    graph.add_task(
+        create_task(
+            "task-4",
+            dependencies=[
+                "task-2",
+                "task-3",
+            ],
+        )
+    )
+
+    graph.validate()
+
+    ready = graph.get_ready_tasks()
+
+    assert [task.task_id for task in ready] == [
+        "task-1"
+    ]
+
+    graph.mark_running("task-1")
+    graph.mark_completed(
+        "task-1",
+        result="result-1",
+    )
+
+    ready = graph.get_ready_tasks()
+
+    assert [task.task_id for task in ready] == [
+        "task-2",
+        "task-3",
+    ]
+
+    graph.mark_running("task-2")
+    graph.mark_completed(
+        "task-2",
+        result="result-2",
+    )
+
+    ready = graph.get_ready_tasks()
+
+    assert [task.task_id for task in ready] == [
+        "task-3"
+    ]
+
+    graph.mark_running("task-3")
+    graph.mark_completed(
+        "task-3",
+        result="result-3",
+    )
+
+    ready = graph.get_ready_tasks()
+
+    assert [task.task_id for task in ready] == [
+        "task-4"
+    ]

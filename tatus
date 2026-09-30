@@ -169,7 +169,8 @@ class LangGraphRuntime:
                 "approval_id": exc.approval_id,
                 "waiting_for_approval": True,
             }
-        if isinstance(result, dict) and "result" in result:
+
+        if isinstance(result, dict):
             return result
 
         return {
