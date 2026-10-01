@@ -1,8 +1,14 @@
 """
-Enterprise Agent Harness - API Server 启动脚本
+Enterprise Agent Harness - API Server 完整启动脚本
 
-注册 write_file (HIGH risk, 需审批) 和其他工具，
-启动 FastAPI server，Postman 直接调。
+三层融合：
+  1. Tool Gateway: write_file (HIGH risk → HITL 审批) + read_file (LOW)
+  2. DeepAgents FilesystemMiddleware: Agent 内部辅助 (read_file, glob, ls)
+  3. Agent Runtime: create_deep_agent(middleware=..., tools=[gateway tools...])
+
+启动后可以：
+  直接调 Tool Gateway:  POST /v1/tools/execute
+  调完整 Agent Runtime:  POST /v1/runs → POST /v1/runs/{id}/start
 """
 
 from __future__ import annotations
@@ -14,6 +20,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..",
 
 import uvicorn
 
+from enterprise_harness.agent.config import AgentConfig
 from enterprise_harness.agent.registry import AgentRegistry
 from enterprise_harness.api.server import app, init_api
 from enterprise_harness.gateway.executor import ToolExecutor
@@ -30,7 +37,7 @@ from enterprise_harness.policy.rbac import RBAC, Role
 from enterprise_harness.runtime.manager import RunManager
 
 
-def _write_file(path: str, content: str) -> dict:
+def _secure_write_file(path: str, content: str) -> dict:
     abs_path = os.path.abspath(path)
     os.makedirs(os.path.dirname(abs_path) or ".", exist_ok=True)
     with open(abs_path, "w", encoding="utf-8") as f:
@@ -38,7 +45,7 @@ def _write_file(path: str, content: str) -> dict:
     return {"status": "written", "path": abs_path, "bytes": len(content.encode("utf-8"))}
 
 
-def _read_file(path: str) -> dict:
+def _secure_read_file(path: str) -> dict:
     abs_path = os.path.abspath(path)
     try:
         with open(abs_path, "r", encoding="utf-8") as f:
@@ -51,8 +58,8 @@ def _read_file(path: str) -> dict:
 def build_tools() -> list[ToolDefinition]:
     return [
         ToolDefinition(
-            name="read_file",
-            description="读取文件内容",
+            name="secure_read_file",
+            description="读取文件（受 Harness 治理，LOW risk）",
             input_schema={
                 "type": "object",
                 "properties": {"path": {"type": "string", "description": "文件绝对或相对路径"}},
@@ -60,22 +67,22 @@ def build_tools() -> list[ToolDefinition]:
             },
             risk_level="LOW",
             permissions=["file:read"],
-            handler=_read_file,
+            handler=_secure_read_file,
         ),
         ToolDefinition(
-            name="write_file",
-            description="写入/覆盖文件（高风险，需审批）",
+            name="secure_write_file",
+            description="写入/覆盖文件（受 Harness 治理，HIGH risk → 触发人工审批）",
             input_schema={
                 "type": "object",
                 "properties": {
                     "path": {"type": "string", "description": "文件绝对或相对路径"},
-                    "content": {"type": "string", "description": "文件内容"},
+                    "content": {"type": "string", "description": "要写入的内容"},
                 },
                 "required": ["path", "content"],
             },
             risk_level="HIGH",
             permissions=["file:write"],
-            handler=_write_file,
+            handler=_secure_write_file,
         ),
     ]
 
@@ -105,9 +112,33 @@ def build_gateway() -> ToolGateway:
     )
 
 
+def build_agents() -> AgentRegistry:
+    registry = AgentRegistry()
+
+    cfg = AgentConfig(
+        agent_id="file-agent",
+        name="File Agent",
+        model="gpt-4o-mini",
+        system_prompt=(
+            "You are a file management assistant.\n"
+            "Use secure_read_file to read files.\n"
+            "Use secure_write_file to write files (this requires approval).\n"
+            "You also have filesystem tools (read_file, glob, ls) for auxiliary operations."
+        ),
+        tools=["secure_read_file", "secure_write_file"],
+        middleware=["filesystem"],
+        filesystem_permissions=["read_file", "glob", "ls"],
+        interrupt_on={"tool_call": True},
+        use_checkpointer=True,
+    )
+
+    registry.register(cfg)
+    return registry
+
+
 def main():
     gateway = build_gateway()
-    registry = AgentRegistry()
+    registry = build_agents()
     run_mgr = RunManager(
         replanner=SimpleReplanner(),
         trace_manager=TraceManager(),
@@ -120,24 +151,42 @@ def main():
         tool_gateway=gateway,
     )
 
-    print("=" * 56)
-    print("  Enterprise Agent Harness API Server")
-    print("=" * 56)
-    print(f"  Tools registered: {len(gateway.registry.list_tools())}")
+    print("=" * 60)
+    print("  Enterprise Agent Harness - Complete API Server")
+    print("=" * 60)
+    print()
+    print("  [Tool Gateway] Tools registered:")
     for t in gateway.registry.list_tools():
-        print(f"    • {t.name}  (risk={t.risk_level}, perms={list(t.permissions)})")
+        print(f"    • {t.name:<25} risk={t.risk_level:<5} perms={list(t.permissions)}")
     print()
-    print("  RBAC roles: viewer / editor / admin")
+    print("  [DeepAgents] Agent registered:")
+    for aid in registry.list_agents():
+        cfg = registry.get_config(aid)
+        print(f"    • {cfg.agent_id}  model={cfg.model}")
+        print(f"       tools={cfg.tools}")
+        print(f"       middleware={cfg.middleware}  fs_perms={cfg.filesystem_permissions}")
+        print(f"       interrupt_on={cfg.interrupt_on}  checkpointer={cfg.use_checkpointer}")
     print()
-    print("  POST /v1/tools/execute          直接执行 Tool")
-    print("  POST /v1/tools/approval/approve 审批通过")
-    print("  POST /v1/tools/approval/reject  审批拒绝")
-    print("  GET  /v1/tools                  查看所有注册的 Tool")
+    print("  [RBAC] roles: viewer(read) / editor(read+write) / admin(all)")
     print()
-    print("  Swagger UI: http://127.0.0.1:8000/docs")
-    print("=" * 56)
+    print("  ==== 3 种调用方式 ====")
+    print()
+    print("  A) 直接调 Tool Gateway (跳过 Agent)")
+    print("     POST /v1/tools/execute")
+    print("     POST /v1/tools/approval/approve")
+    print()
+    print("  B) 完整 Agent Runtime (LLM + DeepAgents Loop + HITL)")
+    print("     POST /v1/runs")
+    print("     POST /v1/runs/{id}/start")
+    print("     POST /v1/runs/{id}/approve")
+    print("     POST /v1/runs/{id}/resume")
+    print()
+    print("  C) Swagger UI (最方便)")
+    print("     http://127.0.0.1:8000/docs")
+    print()
+    print("=" * 60)
 
-    uvicorn.run(app, host="127.0.0.1", port=8000, log_level="info")
+    uvicorn.run(app, host="127.0.0.1:8000", log_level="info")
 
 
 if __name__ == "__main__":

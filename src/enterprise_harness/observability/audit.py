@@ -12,6 +12,7 @@ class AuditEvent:
     agent_id: str
     run_id: str
     tool: str
+    tenant_id: str = "default"
     arguments: dict[str, Any] = field(default_factory=dict)
     decision: str = ""
     approver: str | None = None
@@ -28,6 +29,7 @@ class AuditEvent:
             "agent_id": self.agent_id,
             "run_id": self.run_id,
             "tool": self.tool,
+            "tenant_id": self.tenant_id,
             "arguments": self.arguments,
             "decision": self.decision,
             "approver": self.approver,
@@ -49,6 +51,7 @@ class AuditLogger:
         agent_id: str,
         run_id: str,
         tool: str,
+        tenant_id: str = "default",
         arguments: dict[str, Any] | None = None,
         decision: str = "",
         approver: str | None = None,
@@ -61,6 +64,7 @@ class AuditLogger:
             agent_id=agent_id,
             run_id=run_id,
             tool=tool,
+            tenant_id=tenant_id,
             arguments=arguments or {},
             decision=decision,
             approver=approver,
@@ -72,7 +76,15 @@ class AuditLogger:
 
         return audit_event
 
-    def get_events(self) -> list[AuditEvent]:
+    def get_events(
+        self,
+        tenant_id: str | None = None,
+    ) -> list[AuditEvent]:
+        if tenant_id is not None:
+            return [
+                e for e in self._events
+                if e.tenant_id == tenant_id
+            ]
         return list(self._events)
 
     def get_run_events(self, run_id: str) -> list[AuditEvent]:

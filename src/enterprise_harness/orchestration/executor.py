@@ -1,24 +1,22 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
-from enterprise_harness.agent.runtime import AgentRuntime
+if TYPE_CHECKING:
+    from enterprise_harness.runtime.langgraph_runtime import LangGraphRuntime
+
 from enterprise_harness.runtime.context import RunContext
 
 from .task import Task
 
 
 class AgentTaskExecutor:
-    """
-    将 Orchestration Task 适配为 AgentRuntime 执行请求。
-    """
-
     def __init__(
         self,
-        runtime: AgentRuntime,
+        langgraph_runtime: "LangGraphRuntime",
         run_context: RunContext,
     ) -> None:
-        self.runtime = runtime
+        self.langgraph_runtime = langgraph_runtime
         self.run_context = run_context
 
     async def execute(
@@ -51,13 +49,34 @@ class AgentTaskExecutor:
                 "dependency_results"
             ] = dependency_results
 
-        return await self.runtime.run(
-            task=(
-                task.description
-                or task.name
-            ),
-            context=task_context,
+        input_data: dict[str, Any] = {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": (
+                        task.description
+                        or task.name
+                    ),
+                }
+            ],
+            "context": task_context,
+        }
+
+        if self.run_context.built_context:
+            input_data["context"] = {
+                "items": [
+                    item.model_dump()
+                    for item in self.run_context.built_context
+                ],
+                **task_context,
+            }
+
+        result = await self.langgraph_runtime.run(
+            run_id=self.run_context.run_id,
+            input_data=input_data,
         )
+
+        return result
 
     async def __call__(
         self,

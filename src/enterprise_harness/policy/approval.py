@@ -23,6 +23,7 @@ class ApprovalRequest(BaseModel):
 
     run_id: str
     tool_name: str
+    tenant_id: str | None = None
     arguments: dict[str, Any] = Field(
         default_factory=dict
     )

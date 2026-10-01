@@ -6,6 +6,7 @@ from enterprise_harness.orchestration.task import Task
 from enterprise_harness.orchestration.task_graph import TaskGraph
 from enterprise_harness.runtime.manager import RunManager
 from enterprise_harness.runtime.models import RunStatus
+from tests.helpers import FakeLangGraphRuntimeForAgent
 
 
 class FakeAgentRuntime(AgentRuntime):
@@ -61,7 +62,11 @@ def create_graph() -> TaskGraph:
 
 @pytest.mark.asyncio
 async def test_run_manager_executes_task_graph():
-    manager = RunManager()
+    runtime = create_runtime()
+
+    manager = RunManager(
+        langgraph_runtime=FakeLangGraphRuntimeForAgent(runtime),
+    )
 
     run = await manager.create_run(
         agent_id="order-agent",
@@ -70,7 +75,7 @@ async def test_run_manager_executes_task_graph():
 
     result = await manager.start_task_graph_run(
         run_id=run.run_id,
-        runtime=create_runtime(),
+        runtime=runtime,
         task_graph=create_graph(),
     )
 
@@ -94,13 +99,6 @@ async def test_run_manager_executes_task_graph():
 
 @pytest.mark.asyncio
 async def test_run_manager_marks_failed_task_graph_as_failed():
-    manager = RunManager()
-
-    run = await manager.create_run(
-        agent_id="order-agent",
-        task="处理订单 1001",
-    )
-
     graph = create_graph()
 
     class FailingRuntime(AgentRuntime):
@@ -118,6 +116,15 @@ async def test_run_manager_marks_failed_task_graph_as_failed():
             name="Order Agent",
             model="test-model",
         )
+    )
+
+    manager = RunManager(
+        langgraph_runtime=FakeLangGraphRuntimeForAgent(runtime),
+    )
+
+    run = await manager.create_run(
+        agent_id="order-agent",
+        task="处理订单 1001",
     )
 
     result = await manager.start_task_graph_run(

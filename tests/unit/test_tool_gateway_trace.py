@@ -75,7 +75,7 @@ async def test_tool_gateway_creates_success_trace():
 
     span = spans[0]
 
-    assert span.span_type == SpanType.TOOL
+    assert span.component == SpanType.TOOL
     assert span.name == "query_order"
     assert span.status == SpanStatus.SUCCESS
     assert span.output["order_id"] == "ORD001"
@@ -137,4 +137,4 @@ async def test_tool_gateway_creates_failed_trace():
     span = spans[0]
 
     assert span.status == SpanStatus.FAILED
-    assert span.error == "database unavailable"
+    assert span.metadata["error"] == "Tool execution failed: database unavailable"

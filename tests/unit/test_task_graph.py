@@ -29,7 +29,7 @@ def test_add_task():
     graph.add_task(task)
 
     assert graph.get_task("task-1") is task
-    assert graph.tasks["task-1"].name == "Query Order"
+    assert graph.get_task("task-1").name == "Query Order"
 
 
 def test_add_duplicate_task_rejected():
@@ -53,7 +53,7 @@ def test_add_dependency():
 
     graph.add_dependency(
         task_id="task-2",
-        dependency_id="task-1",
+        dependency_task_id="task-1",
     )
 
     assert graph.get_task("task-2").dependencies == [
@@ -68,11 +68,11 @@ def test_add_dependency_unknown_task_rejected():
 
     with pytest.raises(
         KeyError,
-        match="Dependency task not found",
+        match="Task not found",
     ):
         graph.add_dependency(
             task_id="task-1",
-            dependency_id="task-999",
+            dependency_task_id="task-999",
         )
 
 
@@ -87,7 +87,7 @@ def test_self_dependency_rejected():
     ):
         graph.add_dependency(
             task_id="task-1",
-            dependency_id="task-1",
+            dependency_task_id="task-1",
         )
 
 
@@ -105,87 +105,47 @@ def test_duplicate_dependency_is_ignored():
     ]
 
 
-def test_validate_simple_dag():
+def test_add_dependency_validates_acyclic():
     graph = TaskGraph()
 
     graph.add_task(create_task("task-1"))
-    graph.add_task(
-        create_task(
-            "task-2",
-            dependencies=["task-1"],
-        )
-    )
-    graph.add_task(
-        create_task(
-            "task-3",
-            dependencies=["task-2"],
-        )
-    )
+    graph.add_task(create_task("task-2"))
+    graph.add_task(create_task("task-3"))
 
-    graph.validate()
+    graph.add_dependency("task-2", "task-1")
+    graph.add_dependency("task-3", "task-2")
 
 
-def test_validate_unknown_dependency_rejected():
+def test_add_dependency_unknown_dependency_rejected():
     graph = TaskGraph()
 
-    graph.add_task(
-        create_task(
-            "task-1",
-            dependencies=["task-999"],
-        )
-    )
+    graph.add_task(create_task("task-1"))
 
     with pytest.raises(
-        ValueError,
-        match="depends on unknown task",
+        KeyError,
+        match="Task not found",
     ):
-        graph.validate()
+        graph.add_dependency(
+            task_id="task-1",
+            dependency_task_id="task-999",
+        )
 
 
-def test_validate_self_dependency_rejected():
+def test_add_dependency_cycle_rejected():
     graph = TaskGraph()
 
-    graph.add_task(
-        create_task(
-            "task-1",
-            dependencies=["task-1"],
-        )
-    )
+    graph.add_task(create_task("task-1"))
+    graph.add_task(create_task("task-2"))
+    graph.add_task(create_task("task-3"))
 
-    with pytest.raises(
-        ValueError,
-        match="cannot depend on itself",
-    ):
-        graph.validate()
-
-
-def test_validate_cycle_rejected():
-    graph = TaskGraph()
-
-    graph.add_task(
-        create_task(
-            "task-1",
-            dependencies=["task-3"],
-        )
-    )
-    graph.add_task(
-        create_task(
-            "task-2",
-            dependencies=["task-1"],
-        )
-    )
-    graph.add_task(
-        create_task(
-            "task-3",
-            dependencies=["task-2"],
-        )
-    )
+    graph.add_dependency("task-2", "task-1")
+    graph.add_dependency("task-3", "task-2")
 
     with pytest.raises(
         ValueError,
         match="contains a cycle",
     ):
-        graph.validate()
+        graph.add_dependency("task-1", "task-3")
 
 
 def test_ready_tasks_initial_parallel_tasks():
@@ -200,8 +160,6 @@ def test_ready_tasks_initial_parallel_tasks():
             dependencies=["task-1", "task-2"],
         )
     )
-
-    graph.validate()
 
     ready = graph.get_ready_tasks()
 
@@ -225,9 +183,9 @@ def test_ready_tasks_after_first_dependency_completed():
     )
 
     graph.mark_running("task-1")
-    graph.mark_completed(
+    graph.mark_success(
         "task-1",
-        result="result-1",
+        output="result-1",
     )
 
     ready = graph.get_ready_tasks()
@@ -251,15 +209,15 @@ def test_ready_tasks_after_all_dependencies_completed():
     )
 
     graph.mark_running("task-1")
-    graph.mark_completed(
+    graph.mark_success(
         "task-1",
-        result="result-1",
+        output="result-1",
     )
 
     graph.mark_running("task-2")
-    graph.mark_completed(
+    graph.mark_success(
         "task-2",
-        result="result-2",
+        output="result-2",
     )
 
     ready = graph.get_ready_tasks()
@@ -275,9 +233,9 @@ def test_completed_task_is_not_ready():
     graph.add_task(create_task("task-1"))
 
     graph.mark_running("task-1")
-    graph.mark_completed(
+    graph.mark_success(
         "task-1",
-        result="completed",
+        output="completed",
     )
 
     assert graph.get_ready_tasks() == []
@@ -328,18 +286,18 @@ def test_mark_running_requires_pending():
         graph.mark_running("task-1")
 
 
-def test_mark_completed_requires_running():
+def test_mark_success_requires_running():
     graph = TaskGraph()
 
     graph.add_task(create_task("task-1"))
 
     with pytest.raises(
         ValueError,
-        match="cannot transition to COMPLETED",
+        match="cannot transition to SUCCESS",
     ):
-        graph.mark_completed(
+        graph.mark_success(
             "task-1",
-            result="completed",
+            output="completed",
         )
 
 
@@ -358,15 +316,15 @@ def test_mark_failed_requires_running():
         )
 
 
-def test_task_result_and_error_are_updated():
+def test_task_output_and_error_are_updated():
     graph = TaskGraph()
 
     graph.add_task(create_task("task-1"))
 
     graph.mark_running("task-1")
-    graph.mark_completed(
+    graph.mark_success(
         "task-1",
-        result={
+        output={
             "order_id": "1001",
             "updated": True,
         },
@@ -374,8 +332,8 @@ def test_task_result_and_error_are_updated():
 
     task = graph.get_task("task-1")
 
-    assert task.status == TaskStatus.COMPLETED
-    assert task.result == {
+    assert task.status == TaskStatus.SUCCESS
+    assert task.output == {
         "order_id": "1001",
         "updated": True,
     }
@@ -400,8 +358,8 @@ def test_mark_failed_sets_error():
 
 
 def test_diamond_graph():
-    """
-    验证典型 DAG：
+    r"""
+    DAG:
 
           task-1
          /      \
@@ -438,8 +396,6 @@ def test_diamond_graph():
         )
     )
 
-    graph.validate()
-
     ready = graph.get_ready_tasks()
 
     assert [task.task_id for task in ready] == [
@@ -447,9 +403,9 @@ def test_diamond_graph():
     ]
 
     graph.mark_running("task-1")
-    graph.mark_completed(
+    graph.mark_success(
         "task-1",
-        result="result-1",
+        output="result-1",
     )
 
     ready = graph.get_ready_tasks()
@@ -460,9 +416,9 @@ def test_diamond_graph():
     ]
 
     graph.mark_running("task-2")
-    graph.mark_completed(
+    graph.mark_success(
         "task-2",
-        result="result-2",
+        output="result-2",
     )
 
     ready = graph.get_ready_tasks()
@@ -472,9 +428,9 @@ def test_diamond_graph():
     ]
 
     graph.mark_running("task-3")
-    graph.mark_completed(
+    graph.mark_success(
         "task-3",
-        result="result-3",
+        output="result-3",
     )
 
     ready = graph.get_ready_tasks()

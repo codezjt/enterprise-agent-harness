@@ -7,6 +7,11 @@ from uuid import uuid4
 
 from pydantic import BaseModel, Field
 
+from enterprise_harness.repositories import (
+    AgentRepository,
+    InMemoryAgentRepository,
+)
+
 from .config import AgentConfig
 
 
@@ -72,9 +77,16 @@ class AgentRegistry:
     第一版内存实现，后续可替换为 Postgres。
     """
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        agent_repository: AgentRepository | None = None,
+    ) -> None:
         self._profiles: dict[str, AgentProfile] = {}
         self._configs: dict[tuple[str, str], AgentConfig] = {}
+        self._repository = (
+            agent_repository
+            or InMemoryAgentRepository()
+        )
 
     def register(
         self,
@@ -168,5 +180,11 @@ class AgentRegistry:
     def deactivate(self, agent_id: str) -> AgentProfile:
         profile = self.get_profile(agent_id)
         profile.status = AgentStatus.INACTIVE
+        profile.updated_at = datetime.now(timezone.utc)
+        return profile
+
+    def activate(self, agent_id: str) -> AgentProfile:
+        profile = self.get_profile(agent_id)
+        profile.status = AgentStatus.ACTIVE
         profile.updated_at = datetime.now(timezone.utc)
         return profile

@@ -5,6 +5,7 @@ from .dataset import (
     ToolEvaluation,
 )
 from .runner import EvaluationRunner
+from .tool_recorder import RecordedToolCall, ToolCallRecorder
 
 __all__ = [
     "EvaluationDataset",
@@ -12,4 +13,6 @@ __all__ = [
     "EvaluationResult",
     "ToolEvaluation",
     "EvaluationRunner",
+    "RecordedToolCall",
+    "ToolCallRecorder",
 ]

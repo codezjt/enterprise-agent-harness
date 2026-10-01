@@ -1,11 +1,91 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Iterator
 from uuid import uuid4
 
 from .trace import SpanStatus, SpanType, TraceSpan
+from .metrics import MetricCollector, MetricSnapshot
+from .audit import AuditEvent, AuditLogger
+from .cost import CostTracker
+
+
+@dataclass
+class ObservabilitySnapshot:
+    run_id: str | None = None
+    tenant_id: str | None = None
+    timestamp: datetime = field(
+        default_factory=lambda: datetime.now(timezone.utc)
+    )
+
+    traces: list[dict[str, Any]] = field(default_factory=list)
+    metrics: dict[str, Any] | None = None
+    audits: list[dict[str, Any]] = field(default_factory=list)
+    cost: dict[str, Any] | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "run_id": self.run_id,
+            "tenant_id": self.tenant_id,
+            "timestamp": self.timestamp.isoformat(),
+            "traces": self.traces,
+            "metrics": self.metrics,
+            "audits": self.audits,
+            "cost": self.cost,
+        }
+
+
+class ObservabilityManager:
+
+    def __init__(
+        self,
+        trace_manager: TraceManager | None = None,
+        metric_collector: MetricCollector | None = None,
+        audit_logger: AuditLogger | None = None,
+        cost_tracker: CostTracker | None = None,
+    ) -> None:
+        self.trace = trace_manager or TraceManager()
+        self.metrics = metric_collector or MetricCollector()
+        self.audit = audit_logger or AuditLogger()
+        self.cost = cost_tracker
+
+    def _ensure_dict(self, value: Any) -> dict[str, Any]:
+        if hasattr(value, "to_dict"):
+            return value.to_dict()
+        if isinstance(value, dict):
+            return value
+        return {"value": str(value)}
+
+    def snapshot(
+        self,
+        *,
+        run_id: str | None = None,
+        tenant_id: str | None = None,
+    ) -> ObservabilitySnapshot:
+        traces = self.trace.get_run_spans(run_id) if run_id else self.trace.snapshot()
+
+        audits = (
+            self.audit.get_run_events(run_id) if run_id
+            else self.audit.get_events(tenant_id=tenant_id)
+        )
+
+        return ObservabilitySnapshot(
+            run_id=run_id,
+            tenant_id=tenant_id,
+            traces=[self._ensure_dict(t) for t in traces],
+            metrics=self.metrics.snapshot().to_dict(),
+            audits=[a.to_dict() for a in audits],
+            cost=self.cost.snapshot() if self.cost else None,
+        )
+
+    def clear(self) -> None:
+        self.trace.clear()
+        self.metrics.reset()
+        self.audit.clear()
+        if self.cost:
+            self.cost.reset()
 
 
 class TraceManager:
@@ -19,6 +99,7 @@ class TraceManager:
         run_id: str,
         agent_name: str,
         *,
+        tenant_id: str | None = None,
         input: Any | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> TraceSpan:
@@ -26,6 +107,7 @@ class TraceManager:
             run_id=run_id,
             span_type=SpanType.AGENT,
             name=agent_name,
+            tenant_id=tenant_id,
             input=input,
             metadata=metadata,
         )
@@ -38,6 +120,7 @@ class TraceManager:
         name: str = "",
         trace_id: str | None = None,
         parent_span_id: str | None = None,
+        tenant_id: str | None = None,
         input: Any | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> TraceSpan:
@@ -47,6 +130,11 @@ class TraceManager:
                 parent_span_id = parent.span_id
                 if trace_id is None:
                     trace_id = parent.trace_id
+                if tenant_id is None:
+                    tenant_id = parent.tenant_id
+        else:
+            if tenant_id is None and parent_span_id in self._spans:
+                tenant_id = self._spans[parent_span_id].tenant_id
 
         if trace_id is None:
             trace_id = str(uuid4())
@@ -56,6 +144,7 @@ class TraceManager:
             span_id=str(uuid4()),
             parent_span_id=parent_span_id,
             run_id=run_id,
+            tenant_id=tenant_id or "default",
             component=span_type,
             name=name,
             start_time=datetime.now(timezone.utc),
@@ -108,11 +197,28 @@ class TraceManager:
     def get_run_spans(
         self,
         run_id: str,
+        tenant_id: str | None = None,
+    ) -> list[TraceSpan]:
+        spans = [
+            span
+            for span in self._spans.values()
+            if span.run_id == run_id
+        ]
+        if tenant_id is not None:
+            spans = [
+                s for s in spans
+                if s.tenant_id == tenant_id
+            ]
+        return spans
+
+    def get_tenant_spans(
+        self,
+        tenant_id: str,
     ) -> list[TraceSpan]:
         return [
             span
             for span in self._spans.values()
-            if span.run_id == run_id
+            if span.tenant_id == tenant_id
         ]
 
     def get_trace(

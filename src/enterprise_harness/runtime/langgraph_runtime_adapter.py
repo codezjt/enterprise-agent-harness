@@ -24,7 +24,7 @@ class LangGraphRuntimeAdapter(Runtime):
         context: RunContext,
     ) -> RuntimeResult:
         try:
-            input_data = {
+            input_data: dict[str, Any] = {
                 "messages": [
                     {
                         "role": "user",
@@ -33,6 +33,12 @@ class LangGraphRuntimeAdapter(Runtime):
                 ],
                 "context": context.context,
             }
+
+            if context.built_context:
+                input_data["context"] = {
+                    "items": [item.model_dump() for item in context.built_context]
+                }
+
             result = await self.runtime.run(
                 run_id=context.run_id,
                 input_data=input_data,

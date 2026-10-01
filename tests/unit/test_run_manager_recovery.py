@@ -6,6 +6,7 @@ from enterprise_harness.orchestration.planner import Plan, Planner
 from enterprise_harness.orchestration.task import Task
 from enterprise_harness.runtime.manager import RunManager
 from enterprise_harness.runtime.models import RunStatus
+from tests.helpers import FakeLangGraphRuntimeForAgent
 
 
 class FakeAgentRuntime(AgentRuntime):
@@ -66,7 +67,9 @@ async def test_run_manager_can_recover_failed_task():
     runtime = FakeAgentRuntime(config)
     planner = RecoveryPlanner()
 
-    run_manager = RunManager()
+    run_manager = RunManager(
+        langgraph_runtime=FakeLangGraphRuntimeForAgent(runtime),
+    )
 
     run = await run_manager.create_run(
         agent_id=config.agent_id,

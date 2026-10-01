@@ -33,6 +33,7 @@ class TraceSpan:
 
     component: SpanType
     name: str = ""
+    tenant_id: str = "default"
 
     start_time: datetime = field(
         default_factory=lambda: datetime.now(timezone.utc)
@@ -70,6 +71,7 @@ class TraceSpan:
             "span_id": self.span_id,
             "parent_span_id": self.parent_span_id,
             "run_id": self.run_id,
+            "tenant_id": self.tenant_id,
             "component": self.component.value,
             "name": self.name,
             "start_time": self.start_time.isoformat(),

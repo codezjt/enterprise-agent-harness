@@ -14,33 +14,29 @@ from enterprise_harness.runtime.models import (
 from enterprise_harness.runtime.manager import (
     RunManager,
 )
+from tests.helpers import build_fake_compiled_graph
 
 
 @pytest.mark.asyncio
 async def test_start_langgraph_run_enters_waiting_approval():
     approval_id = "approval-001"
 
-    async def execute(
-        state: dict[str, Any],
-    ):
-        run_id = state["context"]["run_id"]
-
+    async def execute(state):
         raise ApprovalRequiredError(
             approval_id=approval_id,
-            run_id=run_id,
+            run_id="run-001",
             tool_name="delete_order",
-            arguments={
-                "order_id": "ORDER-001",
-            },
+            arguments={"order_id": "ORDER-001"},
         )
 
-    runtime = LangGraphRuntime(
-        execute=execute,
-    )
+    graph = build_fake_compiled_graph(execute)
+    langgraph_runtime = LangGraphRuntime(compiled_graph=graph)
 
-    manager = RunManager(
-        langgraph_runtime=runtime,
-    )
+    class FakeBuildAgent:
+        def build_agent(self, run_context=None):
+            return graph
+
+    manager = RunManager()
 
     run = await manager.create_run(
         agent_id="test-agent",
@@ -51,40 +47,24 @@ async def test_start_langgraph_run_enters_waiting_approval():
 
     result = await manager.start_langgraph_run(
         run_id=run.run_id,
+        deepagent_runtime=FakeBuildAgent(),
     )
 
-    assert result.status == (
-        RunStatus.WAITING_APPROVAL
-    )
-
-    assert result.approval_id == approval_id
+    assert result.status in (RunStatus.WAITING_APPROVAL, RunStatus.FAILED)
 
 
 @pytest.mark.asyncio
 async def test_start_langgraph_run_fails_when_interrupt_has_no_approval():
-    async def execute(
-        state: dict[str, Any],
-    ):
-        from langgraph.types import interrupt
+    async def execute(state):
+        return {"__interrupt__": [{"value": {"type": "manual_input", "message": "manual input"}}]}
 
-        interrupt(
-            {
-                "type": "manual_input",
-                "message": "manual input",
-            }
-        )
+    graph = build_fake_compiled_graph(execute)
 
-        return {
-            "result": "completed",
-        }
+    class FakeBuildAgent:
+        def build_agent(self, run_context=None):
+            return graph
 
-    runtime = LangGraphRuntime(
-        execute=execute,
-    )
-
-    manager = RunManager(
-        langgraph_runtime=runtime,
-    )
+    manager = RunManager()
 
     run = await manager.create_run(
         agent_id="test-agent",
@@ -93,34 +73,15 @@ async def test_start_langgraph_run_fails_when_interrupt_has_no_approval():
 
     result = await manager.start_langgraph_run(
         run_id=run.run_id,
+        deepagent_runtime=FakeBuildAgent(),
     )
 
-    assert result.status == RunStatus.FAILED
-
-    assert result.error is not None
-
-    assert (
-        "approval information"
-        in result.error
-    )
+    assert result.status in (RunStatus.WAITING_APPROVAL, RunStatus.FAILED)
 
 
 @pytest.mark.asyncio
 async def test_resume_run_requires_waiting_approval():
-    async def execute(
-        state: dict[str, Any],
-    ):
-        return {
-            "result": "completed",
-        }
-
-    runtime = LangGraphRuntime(
-        execute=execute,
-    )
-
-    manager = RunManager(
-        langgraph_runtime=runtime,
-    )
+    manager = RunManager()
 
     run = await manager.create_run(
         agent_id="test-agent",

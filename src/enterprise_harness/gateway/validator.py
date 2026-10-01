@@ -2,15 +2,11 @@ from typing import Any
 
 from jsonschema import ValidationError, validate
 
+from .exceptions import ToolValidationError
 from .models import ToolDefinition
 
 
-class ToolValidationError(ValueError):
-    pass
-
-
 class ToolValidator:
-    """负责按照 ToolDefinition 中的 JSON Schema 校验参数。"""
 
     def validate(
         self,
@@ -24,7 +20,8 @@ class ToolValidator:
             )
         except ValidationError as exc:
             raise ToolValidationError(
-                f"Invalid arguments for tool '{tool.name}': {exc.message}"
-            ) from exc
+                tool.name,
+                exc.message,
+            )
 
         return arguments

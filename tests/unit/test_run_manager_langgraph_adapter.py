@@ -9,6 +9,7 @@ from enterprise_harness.runtime.langgraph_runtime_adapter import (
 from enterprise_harness.runtime.manager import RunManager
 from enterprise_harness.runtime.models import RunStatus
 from enterprise_harness.runtime.result import RuntimeResult
+from tests.helpers import FakeLangGraphRuntimeForAgent
 
 
 class FakeLangGraphRuntime:
@@ -16,8 +17,7 @@ class FakeLangGraphRuntime:
     async def run(
         self,
         run_id: str,
-        task: str,
-        context=None,
+        input_data: dict,
     ):
         return {
             "result": "completed",
@@ -80,8 +80,7 @@ async def test_run_manager_start_langgraph_run_waits_for_approval():
         async def run(
             self,
             run_id,
-            task,
-            context=None,
+            input_data: dict,
         ):
             return {
                 "__interrupt__": [
@@ -156,8 +155,7 @@ async def test_run_manager_resume_langgraph_run_uses_unified_runtime_result():
         async def run(
             self,
             run_id,
-            task,
-            context=None,
+            input_data: dict,
         ):
             return {
                 "__interrupt__": [

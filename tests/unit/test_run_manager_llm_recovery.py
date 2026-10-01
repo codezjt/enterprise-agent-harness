@@ -12,6 +12,7 @@ from enterprise_harness.orchestration.planner import Plan, Planner
 from enterprise_harness.orchestration.replanner import ReplanResult
 from enterprise_harness.orchestration.task import Task
 from enterprise_harness.runtime import RunManager, RunStatus
+from tests.helpers import FakeLangGraphRuntimeForAgent
 
 
 class FakeAgentRuntime(AgentRuntime):
@@ -29,7 +30,6 @@ class FakeAgentRuntime(AgentRuntime):
         task_id = context.get("task_id")
         self.calls.append(task_id)
 
-        # 原始 T2 故意失败。
         if task_id == "T2":
             raise RuntimeError("permission denied")
 
@@ -67,15 +67,8 @@ class InitialPlanner(Planner):
 
 
 class FakeLLMReplanner(LLMReplanner):
-    """
-    不真正调用模型，只模拟 LLM 输出。
-
-    用于验证 RecoveryManager 与 LLMReplanner
-    之间的真实接口契约。
-    """
 
     def __init__(self):
-        # 绕过真实模型初始化。
         pass
 
     async def replan(self, request):
@@ -117,6 +110,7 @@ async def test_run_manager_llm_replanner_recovery():
     replanner = FakeLLMReplanner()
 
     manager = RunManager(
+        langgraph_runtime=FakeLangGraphRuntimeForAgent(runtime),
         replanner=replanner,
         max_replans=1,
     )
@@ -139,13 +133,10 @@ async def test_run_manager_llm_replanner_recovery():
     assert "T2_ALT" in runtime.calls
     assert "T3" in runtime.calls
 
-    # 原任务失败一次。
     assert runtime.calls.count("T2") == 1
 
-    # Replan 后执行备用任务。
     assert runtime.calls.count("T2_ALT") == 1
 
-    # T3 最终成功。
     assert runtime.calls.count("T3") == 1
 
     assert result.result["T2_ALT"] is not None

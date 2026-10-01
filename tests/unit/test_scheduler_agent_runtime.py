@@ -7,6 +7,7 @@ from enterprise_harness.orchestration.scheduler import Scheduler
 from enterprise_harness.orchestration.task import Task
 from enterprise_harness.orchestration.task_graph import TaskGraph
 from enterprise_harness.runtime.context import RunContext
+from tests.helpers import FakeLangGraphRuntimeForAgent
 
 
 class FakeAgentRuntime(AgentRuntime):
@@ -70,8 +71,10 @@ async def test_scheduler_executes_agent_tasks():
         task="处理订单 1001",
     )
 
+    runtime = create_runtime()
+
     executor = AgentTaskExecutor(
-        runtime=create_runtime(),
+        langgraph_runtime=FakeLangGraphRuntimeForAgent(runtime),
         run_context=context,
     )
 

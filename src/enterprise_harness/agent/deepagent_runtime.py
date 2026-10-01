@@ -125,6 +125,11 @@ class DeepAgentRuntime(AgentRuntime):
                     if run_context
                     else None
                 ),
+                tenant_id=(
+                    run_context.tenant_id
+                    if run_context
+                    else "default"
+                ),
             )
 
             agent_tools.extend(adapter.adapt_all(definitions))
@@ -168,7 +173,7 @@ class DeepAgentRuntime(AgentRuntime):
         task: str,
         context: dict[str, Any] | None = None,
     ) -> Any:
-        input_data = {
+        input_data: dict[str, Any] = {
             "messages": [
                 {
                     "role": "user",
@@ -179,7 +184,7 @@ class DeepAgentRuntime(AgentRuntime):
         if context:
             input_data["context"] = context
 
-        agent = self.build_agent()
+        agent = self.build_agent(run_context=None)
         start_time = time.perf_counter()
         try:
             result = await agent.ainvoke(input_data)

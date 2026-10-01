@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import json
+import re
+from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import FastAPI, HTTPException
@@ -43,7 +46,7 @@ def init_api(
     _registry = registry
     _run_manager = run_manager
     _trace_manager = trace_manager or run_manager.trace_manager
-    _approval_manager = approval_manager or run_manager.recovery_manager.replanner is not None
+    _approval_manager = approval_manager or ApprovalManager()
     _tool_gateway = tool_gateway
 
 
@@ -75,6 +78,258 @@ def get_approval_manager() -> ApprovalManager:
     if _approval_manager is None:
         raise RuntimeError("API not initialized. Call init_api() first.")
     return _approval_manager
+
+
+def _route_task(
+    message: str,
+    gateway: ToolGateway,
+    agent_tools: list[str],
+) -> tuple[str, dict[str, Any] | None]:
+    """
+    基于 ToolGateway.registry 判断消息能不能直接映射到一个 Tool。
+
+    返回:
+        ("tool", {"tool_name": ..., "arguments": ...})
+        ("agent", None)
+    """
+    available_tools = [t for t in gateway.registry.list_tools() if t.name in agent_tools]
+
+    msg_lower = message.lower()
+    matches: list[tuple[int, str, dict[str, Any]]] = []
+
+    for tool in available_tools:
+        name_parts = tool.name.replace("secure_", "").replace("_", " ")
+        keywords = {name_parts, tool.name}
+        for word in re.split(r"[\s,、，。.!！?？;；:：\"']+", tool.description.lower()):
+            if len(word) >= 2:
+                keywords.add(word)
+        keywords.add(tool.name)
+
+        matched = any(kw in msg_lower for kw in keywords if kw.strip())
+        if not matched:
+            continue
+
+        args: dict[str, Any] = {}
+        schema = tool.input_schema or {}
+        properties = schema.get("properties", {})
+
+        for prop_name, prop_schema in properties.items():
+            desc = prop_schema.get("description", "").lower()
+            prop_type = prop_schema.get("type", "string")
+
+            if prop_type == "string":
+                if "path" in desc or "file" in desc or "文件" in desc or "路径" in desc:
+                    for pat in [
+                        r"([A-Za-z]:[\\/][^\s,，。;；]+(?:\\[^\s,，。;；]*)*\.[A-Za-z0-9]+)",
+                        r"(D:/[^\s,，。;；]+)",
+                        r"(C:/[^\s,，。;；]+)",
+                        r"(/[^\s,，。;；]+(?:/[^\s,，。;；]*)*)",
+                    ]:
+                        m = re.search(pat, message)
+                        if m:
+                            args[prop_name] = m.group(1)
+                            break
+                elif "content" in desc or "内容" in desc:
+                    m = re.search(r"写[入作成]?[：:「\"']?([^\"'」，。，；;\s]+)[\"'」]?", message)
+                    if not m:
+                        m = re.search(r"['\"]([^'\"]+)['\"]", message)
+                    if m:
+                        args[prop_name] = m.group(1)
+                elif prop_name not in args:
+                    if "id" in prop_name.lower() or "code" in prop_name.lower():
+                        m = re.search(r'([A-Z]{2,}[-\s]*\d+)', message)
+                        if m:
+                            args[prop_name] = m.group(1).strip().replace(" ", "-")
+                    elif "status" in prop_name.lower() or "state" in prop_name.lower():
+                        m = re.search(r'(?:status|state)\s+(?:to\s+)?[\"\']?(\w+)[\"\']?', message, re.IGNORECASE)
+                        if m:
+                            args[prop_name] = m.group(1).upper()
+
+        required = schema.get("required", [])
+        if all(r in args for r in required):
+            score = 0
+            if name_parts in msg_lower:
+                score += 100
+            matching_kw = sum(1 for kw in keywords if kw.strip() and kw in msg_lower)
+            score += matching_kw
+            matches.append((score, tool.name, args))
+
+    if matches:
+        matches.sort(key=lambda x: x[0], reverse=True)
+        _, best_name, best_args = matches[0]
+        return ("tool", {"tool_name": best_name, "arguments": best_args})
+
+    return ("agent", None)
+
+
+class ChatRequest(BaseModel):
+    agent_id: str | None = None
+    message: str
+    principal_id: str = "api-user"
+    principal_role: str = "editor"
+    context: dict[str, Any] = Field(default_factory=dict)
+
+
+class ChatResponse(BaseModel):
+    status: str
+    reply: Any | None = None
+    run_id: str | None = None
+    approval_id: str | None = None
+    run_status: str | None = None
+    routed_to: str | None = None
+
+
+@app.post("/v1/chat")
+async def chat(req: ChatRequest):
+    registry = get_registry()
+    gateway = get_tool_gateway()
+    manager = get_run_manager()
+
+    from enterprise_harness.policy.rbac import Principal
+
+    principal = Principal(
+        principal_id=req.principal_id,
+        role=req.principal_role,
+    )
+
+    agent_id = req.agent_id
+    if agent_id is None:
+        try:
+            agent_id = registry.list_agents()[0].agent_id
+        except (IndexError, KeyError):
+            raise HTTPException(status_code=400, detail="No agent_id provided and no agent registered")
+
+    agent_tools = registry.get_config(agent_id).tools
+
+    route, payload = _route_task(req.message, gateway, agent_tools)
+
+    if route == "tool" and payload is not None:
+        try:
+            result = await gateway.execute(
+                tool_name=payload["tool_name"],
+                arguments=payload["arguments"],
+                principal=principal,
+            )
+            return ChatResponse(
+                status="ok",
+                reply=result,
+                routed_to=f"tool:{payload['tool_name']}",
+            )
+        except ApprovalRequiredError as exc:
+            return ChatResponse(
+                status="WAITING_APPROVAL",
+                approval_id=exc.approval_id,
+                reply={
+                    "tool_name": exc.tool_name,
+                    "reason": "Tool execution requires HITL approval",
+                    "message": str(exc),
+                },
+                routed_to=f"tool:{payload['tool_name']}",
+            )
+        except PermissionError as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+    from enterprise_harness.agent.deepagent_runtime import DeepAgentRuntime
+
+    config = registry.get_config(agent_id)
+    runtime = DeepAgentRuntime(config=config, tool_gateway=gateway)
+
+    run = await manager.create_run(
+        agent_id=agent_id,
+        task=req.message,
+        context=req.context,
+    )
+
+    run = await manager.start_langgraph_run(
+        run_id=run.run_id,
+        deepagent_runtime=runtime,
+        principal=principal,
+    )
+
+    if run.status.value == "WAITING_APPROVAL":
+        return ChatResponse(
+            status="WAITING_APPROVAL",
+            run_id=run.run_id,
+            approval_id=run.approval_id,
+            run_status=run.status.value,
+            routed_to="deepagent",
+        )
+
+    return ChatResponse(
+        status=run.status.value.lower(),
+        reply=run.result,
+        run_id=run.run_id,
+        run_status=run.status.value,
+        routed_to="deepagent",
+    )
+
+
+class ApprovalHandleRequest(BaseModel):
+    action: str = "approve"
+    comment: str | None = None
+
+
+@app.post("/v1/approvals/{approval_id}")
+async def handle_approval(approval_id: str, req: ApprovalHandleRequest | None = None):
+    manager = get_run_manager()
+    approval_manager = get_approval_manager()
+
+    action = (req.action.lower().strip() if req else "approve")
+
+    run = None
+    for r in manager.runs.values():
+        if r.approval_id == approval_id:
+            run = r
+            break
+
+    if action in ("approve", "approve_it", "pass", "ok", "y", "yes", "1"):
+        await approval_manager.approve(approval_id, comment=(req.comment if req else None))
+        status = "APPROVED"
+    elif action in ("reject", "deny", "refuse", "n", "no", "0"):
+        await approval_manager.reject(approval_id, comment=(req.comment if req else None))
+        status = "REJECTED"
+        if run is not None:
+            return {
+                "status": "ok",
+                "action": "rejected",
+                "approval_id": approval_id,
+                "run_id": run.run_id,
+                "run_status": run.status.value,
+                "message": "Run rejected by human",
+            }
+    else:
+        raise HTTPException(status_code=400, detail=f"Unknown action '{action}'. Use 'approve' or 'reject'.")
+
+    if run is not None and run.status.value == "WAITING_APPROVAL":
+        try:
+            run = await manager.resume_run(
+                run.run_id,
+                value={"approval_id": approval_id, "approved": True},
+            )
+            return {
+                "status": "ok",
+                "action": "approved",
+                "approval_id": approval_id,
+                "run_id": run.run_id,
+                "run_status": run.status.value,
+                "result": run.result,
+            }
+        except Exception as exc:
+            return {
+                "status": "ok",
+                "action": "approved",
+                "approval_id": approval_id,
+                "run_id": run.run_id,
+                "run_status": "RESUME_FAILED",
+                "error": str(exc),
+            }
+
+    return {
+        "status": "ok",
+        "action": "approved",
+        "approval_id": approval_id,
+        "run_status": status,
+    }
 
 
 class CreateAgentRequest(BaseModel):
@@ -248,6 +503,8 @@ async def cancel_run(run_id: str):
         run = await manager.cancel_run(run_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     return run_response(run)
 
 
@@ -304,6 +561,10 @@ async def reject_run(run_id: str, req: ApprovalDecisionRequest):
             comment=req.comment,
         )
 
+    run.status = RunStatus.FAILED
+    run.error = f"Run rejected by human: {req.comment or 'no comment'}"
+    run.completed_at = datetime.now(timezone.utc)
+
     return run_response(run)
 
 
@@ -342,6 +603,93 @@ def run_response(run: Run) -> RunResponse:
             else None
         ),
     )
+
+
+@app.get("/v1/runs")
+async def list_runs(tenant_id: str | None = None):
+    manager = get_run_manager()
+    runs = await manager.list_runs(tenant_id=tenant_id)
+    return [run_response(r) for r in runs]
+
+
+@app.get("/v1/runs/{run_id}/observability")
+async def get_run_observability(run_id: str):
+    manager = get_run_manager()
+
+    try:
+        await manager.get_run(run_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    from enterprise_harness.observability.manager import ObservabilityManager
+
+    obs = ObservabilityManager(
+        trace_manager=get_trace_manager(),
+    )
+    snapshot = obs.snapshot(run_id=run_id)
+    return {
+        "run_id": run_id,
+        "traces": snapshot.traces,
+        "metrics": snapshot.metrics,
+    }
+
+
+@app.post("/v1/agents/{agent_id}/enable")
+async def enable_agent(agent_id: str):
+    registry = get_registry()
+    try:
+        registry.activate(agent_id)
+    except (KeyError, ValueError) as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return {"status": "ok", "agent_id": agent_id, "agent_status": "ACTIVE"}
+
+
+@app.post("/v1/agents/{agent_id}/disable")
+async def disable_agent(agent_id: str):
+    registry = get_registry()
+    try:
+        registry.deactivate(agent_id)
+    except (KeyError, ValueError) as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return {"status": "ok", "agent_id": agent_id, "agent_status": "INACTIVE"}
+
+
+class UpdateAgentRequest(BaseModel):
+    name: str | None = None
+    model: str | None = None
+    system_prompt: str | None = None
+    tools: list[str] | None = None
+    skills: list[str] | None = None
+    middleware: list[str] | None = None
+    description: str | None = None
+    owner: str | None = None
+
+
+@app.put("/v1/agents/{agent_id}")
+async def update_agent(agent_id: str, req: UpdateAgentRequest):
+    registry = get_registry()
+    try:
+        config = registry.get_config(agent_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    updates = req.model_dump(exclude_none=True)
+
+    description = updates.pop("description", None)
+    owner = updates.pop("owner", None)
+
+    if updates:
+        for field, value in updates.items():
+            if hasattr(config, field):
+                setattr(config, field, value)
+
+        try:
+            registry.update_config(config)
+        except (ValueError, KeyError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    profile = registry.get_profile(agent_id)
+    return profile.to_dict()
 
 
 class ExecuteToolRequest(BaseModel):

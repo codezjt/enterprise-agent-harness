@@ -19,10 +19,10 @@ def test_start_and_finish_span():
     )
 
     assert span.run_id == "run-001"
-    assert span.span_type == SpanType.TOOL
+    assert span.component == SpanType.TOOL
     assert span.name == "query_order"
     assert span.status == SpanStatus.RUNNING
-    assert span.ended_at is None
+    assert span.end_time is None
 
     finished = manager.finish_span(
         span.span_id,
@@ -34,7 +34,7 @@ def test_start_and_finish_span():
 
     assert finished.status == SpanStatus.SUCCESS
     assert finished.output["status"] == "PAID"
-    assert finished.ended_at is not None
+    assert finished.end_time is not None
     assert finished.duration_ms is not None
 
 
@@ -56,7 +56,7 @@ def test_failed_span():
     result = manager.get_span(span.span_id)
 
     assert result.status == SpanStatus.FAILED
-    assert result.error == "database error"
+    assert result.metadata["error"] == "database error"
 
 
 def test_parent_child_span():

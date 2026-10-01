@@ -34,12 +34,14 @@ class RunContextBuilder:
         root_span = self.trace_manager.start_run_span(
             run_id=run.run_id,
             agent_name=run.agent_id,
+            tenant_id=run.tenant_id,
             input={
                 "task": run.task,
                 "context": run.context,
             },
             metadata={
                 "agent_id": run.agent_id,
+                "tenant_id": run.tenant_id,
             },
         )
 

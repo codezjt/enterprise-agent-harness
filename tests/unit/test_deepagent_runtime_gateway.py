@@ -106,6 +106,9 @@ async def test_deepagent_runtime_builds_gateway_tools():
             ),
         )
 
-    assert runtime.agent is fake_agent
+        assert callable(runtime.build_agent)
+
+        built = runtime.build_agent(run_context=None)
+        assert built is fake_agent
 
     fake_agent.ainvoke.assert_not_called()

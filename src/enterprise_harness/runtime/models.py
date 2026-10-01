@@ -16,10 +16,29 @@ class RunStatus(str, Enum):
     CANCELLED = "CANCELLED"
     TIMEOUT = "TIMEOUT"
 
+    @classmethod
+    def is_valid_transition(cls, from_status, to_status) -> bool:
+        return to_status in _STATUS_TRANSITIONS.get(from_status, frozenset())
+
+
+_STATUS_TRANSITIONS = {
+    RunStatus.CREATED: {RunStatus.RUNNING, RunStatus.PLANNING, RunStatus.CANCELLED},
+    RunStatus.RUNNING: {RunStatus.PLANNING, RunStatus.EXECUTING, RunStatus.WAITING_APPROVAL, RunStatus.COMPLETED, RunStatus.FAILED, RunStatus.CANCELLED, RunStatus.TIMEOUT},
+    RunStatus.PLANNING: {RunStatus.EXECUTING, RunStatus.FAILED, RunStatus.CANCELLED},
+    RunStatus.EXECUTING: {RunStatus.WAITING_APPROVAL, RunStatus.COMPLETED, RunStatus.FAILED, RunStatus.CANCELLED, RunStatus.TIMEOUT},
+    RunStatus.WAITING_APPROVAL: {RunStatus.RUNNING, RunStatus.FAILED, RunStatus.CANCELLED},
+    RunStatus.COMPLETED: frozenset(),
+    RunStatus.FAILED: frozenset(),
+    RunStatus.CANCELLED: frozenset(),
+    RunStatus.TIMEOUT: {RunStatus.FAILED, RunStatus.CANCELLED},
+}
+
 
 class Run(BaseModel):
     run_id: str
     agent_id: str
+    agent_version: str = "1.0.0"
+    tenant_id: str = "default"
     task: str
 
     status: RunStatus = RunStatus.CREATED

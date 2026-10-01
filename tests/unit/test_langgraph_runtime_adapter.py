@@ -26,12 +26,12 @@ class FakeLangGraphRuntime:
     async def run(
         self,
         run_id: str,
-        task: str,
-        context=None,
+        input_data: dict,
     ):
+        task = input_data.get("messages", [{}])[0].get("content", "")
         return {
             "task": task,
-            "context": context,
+            "context": input_data.get("context"),
             "result": "completed",
         }
 
@@ -93,8 +93,7 @@ class InterruptLangGraphRuntime:
     async def run(
         self,
         run_id: str,
-        task: str,
-        context=None,
+        input_data: dict,
     ):
         return {
             "__interrupt__": [
@@ -144,8 +143,7 @@ class FailingLangGraphRuntime:
     async def run(
         self,
         run_id: str,
-        task: str,
-        context=None,
+        input_data: dict,
     ):
         raise RuntimeError(
             "langgraph execution failed"

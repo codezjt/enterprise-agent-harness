@@ -19,6 +19,10 @@ class RunContext(BaseModel):
 
     agent_id: str
 
+    agent_version: str = "1.0.0"
+
+    tenant_id: str = "default"
+
     task: str
 
     context: dict[str, Any] = Field(

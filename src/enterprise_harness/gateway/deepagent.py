@@ -2,7 +2,10 @@ from typing import Any
 
 from langchain_core.tools import StructuredTool
 
-from enterprise_harness.gateway.exceptions import ApprovalRequiredError
+from enterprise_harness.gateway.exceptions import (
+    ApprovalRequiredError,
+    ToolApprovalRejectedError,
+)
 from enterprise_harness.policy.rbac import Principal
 
 from .gateway import ToolGateway
@@ -18,12 +21,14 @@ class DeepAgentToolAdapter:
         context: dict[str, Any] | None = None,
         run_id: str | None = None,
         parent_span_id: str | None = None,
+        tenant_id: str = "default",
     ):
         self.gateway = gateway
         self.principal = principal
         self.context = context or {}
         self.run_id = run_id
         self.parent_span_id = parent_span_id
+        self.tenant_id = tenant_id
 
     def adapt(
         self,
@@ -34,13 +39,16 @@ class DeepAgentToolAdapter:
 
         async def invoke(**arguments: Any) -> Any:
             try:
+                ctx = dict(adapter.context)
+                ctx["tenant_id"] = adapter.tenant_id
                 return await adapter.gateway.execute(
                     tool_name=_tool_name,
                     arguments=arguments,
-                    context=adapter.context,
+                    context=ctx,
                     principal=adapter.principal,
                     run_id=adapter.run_id,
                     parent_span_id=adapter.parent_span_id,
+                    tenant_id=adapter.tenant_id,
                 )
             except ApprovalRequiredError as exc:
                 from langgraph.types import interrupt
@@ -61,18 +69,22 @@ class DeepAgentToolAdapter:
                 )
 
                 if isinstance(result, dict) and result.get("approved"):
+                    ctx = dict(adapter.context)
+                    ctx["tenant_id"] = adapter.tenant_id
                     return await adapter.gateway.execute(
                         tool_name=_tool_name,
                         arguments=arguments,
-                        context=adapter.context,
+                        context=ctx,
                         principal=adapter.principal,
                         run_id=adapter.run_id,
                         parent_span_id=adapter.parent_span_id,
                         approval_id=exc.approval_id,
+                        tenant_id=adapter.tenant_id,
                     )
 
-                raise PermissionError(
-                    f"Approval rejected for tool {_tool_name}"
+                raise ToolApprovalRejectedError(
+                    _tool_name,
+                    exc.approval_id,
                 )
 
         return StructuredTool.from_function(

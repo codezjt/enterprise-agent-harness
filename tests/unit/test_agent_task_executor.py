@@ -4,6 +4,7 @@ from enterprise_harness.agent.runtime import AgentRuntime
 from enterprise_harness.orchestration.executor import AgentTaskExecutor
 from enterprise_harness.orchestration.task import Task
 from enterprise_harness.runtime.context import RunContext
+from tests.helpers import FakeLangGraphRuntimeForAgent
 
 
 class FakeAgentRuntime(AgentRuntime):
@@ -34,7 +35,7 @@ async def test_execute_task_with_agent_runtime():
     context = create_context()
 
     executor = AgentTaskExecutor(
-        runtime=runtime,
+        langgraph_runtime=FakeLangGraphRuntimeForAgent(runtime),
         run_context=context,
     )
 
@@ -68,7 +69,7 @@ async def test_executor_is_callable():
     context = create_context()
 
     executor = AgentTaskExecutor(
-        runtime=runtime,
+        langgraph_runtime=FakeLangGraphRuntimeForAgent(runtime),
         run_context=context,
     )
 

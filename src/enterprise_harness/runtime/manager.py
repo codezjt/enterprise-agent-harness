@@ -1,3 +1,4 @@
+import asyncio
 from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
@@ -20,7 +21,9 @@ from enterprise_harness.orchestration.scheduler import Scheduler
 from enterprise_harness.orchestration.task import TaskStatus
 from enterprise_harness.orchestration.task_graph import TaskGraph
 from enterprise_harness.runtime.recovery import RecoveryManager
+from enterprise_harness.context import ContextBuilder, ContextProvider
 
+from .context import RunContext
 from .context_builder import RunContextBuilder
 from .langgraph_runtime import LangGraphRuntime
 from .models import Run, RunStatus
@@ -32,6 +35,10 @@ from enterprise_harness.runtime.result import (
     RuntimeResult,
     RuntimeStatus,
 )
+from enterprise_harness.repositories import (
+    InMemoryRunRepository,
+    RunRepository,
+)
 
 class RunManager:
 
@@ -42,8 +49,13 @@ class RunManager:
         replanner: Replanner | None = None,
         max_replans: int = 1,
         metric_collector: MetricCollector | None = None,
+        context_provider: ContextProvider | None = None,
+        context_builder: ContextBuilder | None = None,
+        run_repository: RunRepository | None = None,
     ):
         self.runs: dict[str, Run] = {}
+        self._run_repository = run_repository or InMemoryRunRepository()
+        self._cancel_events: dict[str, asyncio.Event] = {}
 
         self._langgraph_runtime = langgraph_runtime
         self._runtime_store: dict[str, LangGraphRuntime] = {}
@@ -53,17 +65,22 @@ class RunManager:
             or TraceManager()
         )
 
+        self._context_builder = context_builder or ContextBuilder()
+
         self.context_builder = (
             RunContextBuilder(
                 self.trace_manager
             )
         )
 
+        self.context_provider = context_provider
+
         self.plan_validator = PlanValidator()
 
         self.recovery_manager = RecoveryManager(
             replanner=replanner or SimpleReplanner(),
             max_replans=max_replans,
+            metric_collector=metric_collector,
         )
 
         self.metric_collector = metric_collector
@@ -72,6 +89,7 @@ class RunManager:
         self,
         run_id: str,
         deepagent_runtime=None,
+        run_context: "RunContext | None" = None,
     ) -> LangGraphRuntime:
         existing = self._runtime_store.get(run_id)
         if existing is not None:
@@ -82,7 +100,7 @@ class RunManager:
             return self._langgraph_runtime
 
         if deepagent_runtime is not None:
-            graph = deepagent_runtime.build_agent()
+            graph = deepagent_runtime.build_agent(run_context)
             lgr = LangGraphRuntime(compiled_graph=graph)
             self._runtime_store[run_id] = lgr
             return lgr
@@ -96,16 +114,22 @@ class RunManager:
         agent_id: str,
         task: str,
         context: dict[str, Any] | None = None,
+        agent_version: str = "1.0.0",
+        tenant_id: str = "default",
     ) -> Run:
 
         run = Run(
             run_id=str(uuid4()),
             agent_id=agent_id,
+            agent_version=agent_version,
+            tenant_id=tenant_id,
             task=task,
             context=context or {},
         )
 
         self.runs[run.run_id] = run
+        self._cancel_events[run.run_id] = asyncio.Event()
+        await self._run_repository.save(run)
         return run
 
     async def start_run(
@@ -117,6 +141,14 @@ class RunManager:
 
         run = self._get_run(run_id)
 
+        if not RunStatus.is_valid_transition(run.status, RunStatus.RUNNING):
+            raise ValueError(
+                f"Cannot start run {run_id} in status {run.status.value}"
+            )
+
+        cancel_event = asyncio.Event()
+        self._cancel_events[run_id] = cancel_event
+
         run.status = RunStatus.RUNNING
         run.started_at = datetime.now(
             timezone.utc
@@ -127,7 +159,36 @@ class RunManager:
             principal=principal,
         )
 
-        adapter = AgentRuntimeAdapter(runtime)
+        if self.context_provider is not None:
+            await self.context_provider.enrich_run_context(run_context)
+            built_ctx = self._context_builder.build_from_run_context(run_context)
+            run_context.built_context = built_ctx
+
+        has_build_agent = (
+            runtime is not None
+            and hasattr(runtime, "build_agent")
+            and callable(getattr(runtime, "build_agent", None))
+        )
+
+        if has_build_agent:
+
+            langgraph_runtime = self._get_or_create_langgraph_runtime(
+                run_id, runtime, run_context=run_context
+            )
+            adapter = LangGraphRuntimeAdapter(langgraph_runtime)
+        elif self._langgraph_runtime is not None:
+
+            self._runtime_store[run_id] = self._langgraph_runtime
+            adapter = LangGraphRuntimeAdapter(self._langgraph_runtime)
+        elif runtime is not None:
+
+            adapter = AgentRuntimeAdapter(runtime)
+        else:
+
+            raise RuntimeError(
+                "No runtime available. Provide runtime, deepagent_runtime, "
+                "or pre-configure langgraph_runtime."
+            )
 
         try:
 
@@ -135,12 +196,10 @@ class RunManager:
                 run_context
             )
 
-            if runtime_result.is_failed:
+            self._apply_runtime_result(run, runtime_result)
 
-                run.status = RunStatus.FAILED
-                run.error = runtime_result.error
-
-                if run_context.trace_root_span_id:
+            if run_context.trace_root_span_id:
+                if runtime_result.is_failed:
                     self.trace_manager.fail_span(
                         run_context.trace_root_span_id,
                         RuntimeError(
@@ -148,35 +207,7 @@ class RunManager:
                             or "Agent runtime failed"
                         ),
                     )
-
-            elif runtime_result.is_cancelled:
-
-                run.status = RunStatus.CANCELLED
-                run.result = runtime_result.result
-
-                if run_context.trace_root_span_id:
-                    self.trace_manager.finish_span(
-                        run_context.trace_root_span_id,
-                        output=runtime_result.result,
-                    )
-
-            elif runtime_result.is_waiting_approval:
-
-                run.status = RunStatus.WAITING_APPROVAL
-                run.result = runtime_result.result
-
-                if runtime_result.approval_id is not None:
-                    run.approval_id = runtime_result.approval_id
-
-                if runtime_result.checkpoint_id is not None:
-                    run.checkpoint_id = runtime_result.checkpoint_id
-
-            else:
-
-                run.result = runtime_result.result
-                run.status = RunStatus.COMPLETED
-
-                if run_context.trace_root_span_id:
+                elif runtime_result.is_completed:
                     self.trace_manager.finish_span(
                         run_context.trace_root_span_id,
                         output=runtime_result.result,
@@ -193,12 +224,19 @@ class RunManager:
                     exc,
                 )
 
-        finally:
-
+        if run.status != RunStatus.WAITING_APPROVAL:
             run.completed_at = (
                 datetime.now(timezone.utc)
             )
 
+        if self.metric_collector is not None:
+            self.metric_collector.record_agent_run(
+                success=run.status == RunStatus.COMPLETED
+            )
+
+        self._cancel_events.pop(run_id, None)
+
+        await self._run_repository.save(run)
         return run
 
     async def start_langgraph_run(
@@ -208,37 +246,16 @@ class RunManager:
             principal: Principal | None = None,
     ) -> Run:
 
-        run = self._get_run(run_id)
+        if deepagent_runtime is None and self._langgraph_runtime is None:
+            raise ValueError(
+                "deepagent_runtime is required for start_langgraph_run"
+            )
 
-        run.status = RunStatus.RUNNING
-
-        run.started_at = datetime.now(
-            timezone.utc
-        )
-
-        run_context = self.context_builder.build(
-            run,
+        return await self.start_run(
+            run_id=run_id,
+            runtime=deepagent_runtime,
             principal=principal,
         )
-
-        langgraph_runtime = self._get_or_create_langgraph_runtime(
-            run_id, deepagent_runtime
-        )
-
-        adapter = LangGraphRuntimeAdapter(langgraph_runtime)
-
-        try:
-            runtime_result = await adapter.run(run_context)
-            self._apply_runtime_result(run, runtime_result)
-
-        except Exception as exc:
-            run.status = RunStatus.FAILED
-            run.error = str(exc)
-
-        if run.status != RunStatus.WAITING_APPROVAL:
-            run.completed_at = datetime.now(timezone.utc)
-
-        return run
 
     async def resume_run(
             self,
@@ -276,6 +293,7 @@ class RunManager:
         if run.status != RunStatus.WAITING_APPROVAL:
             run.completed_at = datetime.now(timezone.utc)
 
+        await self._run_repository.save(run)
         return run
 
     async def cancel_run(
@@ -285,13 +303,36 @@ class RunManager:
 
         run = self._get_run(run_id)
 
+        if not RunStatus.is_valid_transition(run.status, RunStatus.CANCELLED):
+            raise ValueError(
+                f"Cannot cancel run {run_id} in status {run.status.value}"
+            )
+
         run.status = RunStatus.CANCELLED
 
         run.completed_at = (
             datetime.now(timezone.utc)
         )
 
+        cancel_event = self._cancel_events.get(run_id)
+        if cancel_event is not None:
+            cancel_event.set()
+
+        await self._run_repository.save(run)
         return run
+
+    def is_cancelled(self, run_id: str) -> bool:
+        event = self._cancel_events.get(run_id)
+        if event is None:
+            return False
+        return event.is_set()
+
+    async def list_runs(
+        self,
+        tenant_id: str | None = None,
+    ) -> list[Run]:
+        runs = await self._run_repository.list(tenant_id=tenant_id)
+        return runs
 
     async def get_run(
         self,
@@ -299,6 +340,19 @@ class RunManager:
     ) -> Run:
 
         return self._get_run(run_id)
+
+    def get_runs(
+        self,
+        *,
+        tenant_id: str | None = None,
+    ) -> list[Run]:
+        runs = list(self.runs.values())
+        if tenant_id is not None:
+            runs = [
+                r for r in runs
+                if r.tenant_id == tenant_id
+            ]
+        return runs
 
     def _get_run(
         self,
@@ -332,8 +386,30 @@ class RunManager:
             principal=principal,
         )
 
+        if self.context_provider is not None:
+            await self.context_provider.enrich_run_context(run_context)
+            built_ctx = self._context_builder.build_from_run_context(run_context)
+            run_context.built_context = built_ctx
+
+        has_build_agent = (
+            runtime is not None
+            and hasattr(runtime, "build_agent")
+            and callable(getattr(runtime, "build_agent", None))
+        )
+
+        if has_build_agent:
+            langgraph_runtime = self._get_or_create_langgraph_runtime(
+                run_id, runtime, run_context=run_context
+            )
+        elif self._langgraph_runtime is not None:
+            langgraph_runtime = self._langgraph_runtime
+        else:
+            raise RuntimeError(
+                "No LangGraphRuntime available. Provide deepagent_runtime or pre-configure langgraph_runtime."
+            )
+
         executor = AgentTaskExecutor(
-            runtime=runtime,
+            langgraph_runtime=langgraph_runtime,
             run_context=run_context,
         )
 
@@ -425,26 +501,42 @@ class RunManager:
             principal=principal,
         )
 
+        if self.context_provider is not None:
+            await self.context_provider.enrich_run_context(run_context)
+            built_ctx = self._context_builder.build_from_run_context(run_context)
+            run_context.built_context = built_ctx
+
         try:
 
-            # 1. Planner：
-            # 自然语言任务 -> Plan
             plan = await planner.plan(
                 run.task
             )
 
-            # 2. Plan：
-            # Plan -> TaskGraph
             task_graph = (
                 self.plan_validator.validate(
                     plan
                 )
             )
 
-            # 3. TaskGraph + Scheduler：
-            # 执行
+            has_build_agent = (
+                runtime is not None
+                and hasattr(runtime, "build_agent")
+                and callable(getattr(runtime, "build_agent", None))
+            )
+
+            if has_build_agent:
+                langgraph_runtime = self._get_or_create_langgraph_runtime(
+                    run_id, runtime, run_context=run_context
+                )
+            elif self._langgraph_runtime is not None:
+                langgraph_runtime = self._langgraph_runtime
+            else:
+                raise RuntimeError(
+                    "No LangGraphRuntime available. Provide deepagent_runtime or pre-configure langgraph_runtime."
+                )
+
             executor = AgentTaskExecutor(
-                runtime=runtime,
+                langgraph_runtime=langgraph_runtime,
                 run_context=run_context,
             )
 
@@ -455,8 +547,6 @@ class RunManager:
 
             result_graph = await scheduler.run()
 
-            # 4. 如果任务失败，
-            #    进入 Recovery
             if result_graph.has_failed():
 
                 def scheduler_factory(
@@ -476,14 +566,11 @@ class RunManager:
                     )
                 )
 
-            # 5. 收集最终任务结果
             run.result = {
                 task.task_id: task.output
                 for task in result_graph.tasks()
             }
 
-            # 6. 根据 Recovery 后的 TaskGraph
-            #    最终状态决定 Run 状态
             if result_graph.has_failed():
 
                 run.status = RunStatus.FAILED

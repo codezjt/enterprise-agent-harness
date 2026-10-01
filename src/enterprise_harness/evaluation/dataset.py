@@ -82,6 +82,17 @@ class EvaluationResult:
     latencies_ms: list[float] = field(default_factory=list)
     estimated_cost: float = 0.0
 
+    planning_score: float = 0.0
+    replan_count: int = 0
+    retry_count: int = 0
+
+    policy_denials: int = 0
+    approval_required: int = 0
+    approval_approved: int = 0
+
+    input_tokens: int = 0
+    output_tokens: int = 0
+
     @property
     def success_rate(self) -> float:
         if self.total_cases == 0:
@@ -100,6 +111,14 @@ class EvaluationResult:
             return 0.0
         return sum(t.recall for t in self.tool_evaluations) / len(self.tool_evaluations)
 
+    @property
+    def token_usage(self) -> dict[str, int]:
+        return {
+            "input": self.input_tokens,
+            "output": self.output_tokens,
+            "total": self.input_tokens + self.output_tokens,
+        }
+
     def summary(self) -> dict[str, Any]:
         return {
             "run_id": self.run_id,
@@ -108,5 +127,13 @@ class EvaluationResult:
             "success_rate": self.success_rate,
             "tool_precision": self.average_tool_precision,
             "tool_recall": self.average_tool_recall,
+            "planning_score": self.planning_score,
+            "replan_count": self.replan_count,
+            "retry_count": self.retry_count,
+            "policy_denials": self.policy_denials,
+            "approval_required": self.approval_required,
+            "approval_approved": self.approval_approved,
+            "token_usage": self.token_usage,
             "estimated_cost": self.estimated_cost,
+            "average_latency_ms": sum(self.latencies_ms) / len(self.latencies_ms) if self.latencies_ms else 0.0,
         }

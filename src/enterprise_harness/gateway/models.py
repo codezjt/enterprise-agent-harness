@@ -16,6 +16,10 @@ class ToolDefinition(BaseModel):
         default_factory=dict
     )
 
+    output_schema: dict[str, Any] = Field(
+        default_factory=dict
+    )
+
     risk_level: str = "LOW"
 
     permissions: list[str] = Field(

@@ -67,6 +67,11 @@ class TaskGraph:
     ) -> None:
         task = self.get_task(task_id)
 
+        if task.status != TaskStatus.RUNNING:
+            raise ValueError(
+                f"Task {task_id} cannot transition to SUCCESS from {task.status.value}"
+            )
+
         task.status = TaskStatus.SUCCESS
         task.output = output
         task.error = None
@@ -78,11 +83,22 @@ class TaskGraph:
     ) -> None:
         task = self.get_task(task_id)
 
+        if task.status != TaskStatus.RUNNING:
+            raise ValueError(
+                f"Task {task_id} cannot transition to FAILED from {task.status.value}"
+            )
+
         task.status = TaskStatus.FAILED
         task.error = error
 
     def mark_running(self, task_id: str) -> None:
         task = self.get_task(task_id)
+
+        if task.status != TaskStatus.PENDING:
+            raise ValueError(
+                f"Task {task_id} cannot transition to RUNNING from {task.status.value}"
+            )
+
         task.status = TaskStatus.RUNNING
 
     def is_completed(self) -> bool:

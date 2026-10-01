@@ -6,6 +6,7 @@ from enterprise_harness.orchestration.planner import Plan, Planner
 from enterprise_harness.orchestration.task import Task
 from enterprise_harness.runtime.manager import RunManager
 from enterprise_harness.runtime.models import RunStatus
+from tests.helpers import FakeLangGraphRuntimeForAgent
 
 
 class FakeAgentRuntime(AgentRuntime):
@@ -55,7 +56,8 @@ def create_runtime() -> FakeAgentRuntime:
 
 @pytest.mark.asyncio
 async def test_run_manager_executes_planned_run():
-    manager = RunManager()
+    runtime = create_runtime()
+    manager = RunManager(langgraph_runtime=FakeLangGraphRuntimeForAgent(runtime))
 
     run = await manager.create_run(
         agent_id="order-agent",
@@ -64,7 +66,7 @@ async def test_run_manager_executes_planned_run():
 
     result = await manager.start_planned_run(
         run_id=run.run_id,
-        runtime=create_runtime(),
+        runtime=runtime,
         planner=FakePlanner(),
     )
 
@@ -80,7 +82,8 @@ async def test_run_manager_executes_planned_run():
 
 @pytest.mark.asyncio
 async def test_planner_output_controls_task_graph():
-    manager = RunManager()
+    runtime = create_runtime()
+    manager = RunManager(langgraph_runtime=FakeLangGraphRuntimeForAgent(runtime))
 
     run = await manager.create_run(
         agent_id="order-agent",
@@ -103,7 +106,7 @@ async def test_planner_output_controls_task_graph():
 
     result = await manager.start_planned_run(
         run_id=run.run_id,
-        runtime=create_runtime(),
+        runtime=runtime,
         planner=SingleTaskPlanner(),
     )
 
@@ -111,9 +114,11 @@ async def test_planner_output_controls_task_graph():
     assert set(result.result.keys()) == {"ONLY"}
     assert result.result["ONLY"]["answer"] == "completed: 处理订单 1001"
 
+
 @pytest.mark.asyncio
 async def test_run_manager_rejects_invalid_plan_before_execution():
-    manager = RunManager()
+    runtime = create_runtime()
+    manager = RunManager(langgraph_runtime=FakeLangGraphRuntimeForAgent(runtime))
 
     run = await manager.create_run(
         agent_id="order-agent",
@@ -135,22 +140,9 @@ async def test_run_manager_rejects_invalid_plan_before_execution():
                 ],
             )
 
-    class UnexpectedRuntime(AgentRuntime):
-
-        async def run(self, task: str, context=None):
-            raise AssertionError(
-                "AgentRuntime should not be called"
-            )
-
     result = await manager.start_planned_run(
         run_id=run.run_id,
-        runtime=UnexpectedRuntime(
-            config=AgentConfig(
-                agent_id="order-agent",
-                name="Order Agent",
-                model="test-model",
-            )
-        ),
+        runtime=runtime,
         planner=InvalidPlanner(),
     )
 

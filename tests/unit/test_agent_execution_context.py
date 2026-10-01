@@ -71,9 +71,11 @@ async def test_run_manager_creates_context_and_agent_trace():
 
     span = spans[0]
 
-    assert span.span_type == SpanType.AGENT
+    assert span.component == SpanType.AGENT
     assert span.name == "test-agent"
     assert span.status == SpanStatus.SUCCESS
+
+
 @pytest.mark.asyncio
 async def test_failed_agent_execution_creates_failed_trace():
 
@@ -122,8 +124,8 @@ async def test_failed_agent_execution_creates_failed_trace():
 
     span = spans[0]
 
-    assert span.span_type == SpanType.AGENT
+    assert span.component == SpanType.AGENT
     assert span.status == SpanStatus.FAILED
-    assert span.error == (
+    assert span.metadata["error"] == (
         "agent execution failed"
     )

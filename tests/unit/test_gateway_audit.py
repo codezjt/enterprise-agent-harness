@@ -69,6 +69,8 @@ class FakeAuditLogger:
         decision,
         approver,
         result,
+        tenant_id=None,
+        metadata=None,
     ):
         self.records.append(
             {
@@ -291,4 +293,5 @@ async def test_gateway_audit_require_approval():
     assert record["result"] == {
         "success": False,
         "error": "approval_required",
+        "approval_id": record["result"]["approval_id"],
     }

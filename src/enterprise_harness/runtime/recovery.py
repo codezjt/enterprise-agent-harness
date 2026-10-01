@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from enterprise_harness.observability.metrics import MetricCollector
 from enterprise_harness.orchestration.replanner import (
     ReplanRequest,
     Replanner,
@@ -33,6 +34,7 @@ class RecoveryManager:
         replanner: Replanner,
         retry_policy: RetryPolicy | None = None,
         max_replans: int = 1,
+        metric_collector: MetricCollector | None = None,
     ) -> None:
         if max_replans < 0:
             raise ValueError(
@@ -42,6 +44,7 @@ class RecoveryManager:
         self.replanner = replanner
         self.retry_policy = retry_policy or RetryPolicy()
         self.max_replans = max_replans
+        self._metric_collector = metric_collector
 
     async def recover(
         self,
@@ -155,5 +158,8 @@ class RecoveryManager:
             await scheduler.run()
 
             replan_count += 1
+
+            if self._metric_collector is not None:
+                self._metric_collector.record_replan()
 
         return current_graph
