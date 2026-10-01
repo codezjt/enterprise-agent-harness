@@ -24,10 +24,18 @@ class LangGraphRuntimeAdapter(Runtime):
         context: RunContext,
     ) -> RuntimeResult:
         try:
+            input_data = {
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": context.task,
+                    }
+                ],
+                "context": context.context,
+            }
             result = await self.runtime.run(
                 run_id=context.run_id,
-                task=context.task,
-                context=context.context,
+                input_data=input_data,
             )
 
             return self._to_runtime_result(result)

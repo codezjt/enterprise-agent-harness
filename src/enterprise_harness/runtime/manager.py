@@ -45,9 +45,8 @@ class RunManager:
     ):
         self.runs: dict[str, Run] = {}
 
-        self.langgraph_runtime = (
-            langgraph_runtime
-        )
+        self._langgraph_runtime = langgraph_runtime
+        self._runtime_store: dict[str, LangGraphRuntime] = {}
 
         self.trace_manager = (
             trace_manager
@@ -69,10 +68,27 @@ class RunManager:
 
         self.metric_collector = metric_collector
 
-        self.langgraph_runtime_adapter = (
-            LangGraphRuntimeAdapter(langgraph_runtime)
-            if langgraph_runtime is not None
-            else None
+    def _get_or_create_langgraph_runtime(
+        self,
+        run_id: str,
+        deepagent_runtime=None,
+    ) -> LangGraphRuntime:
+        existing = self._runtime_store.get(run_id)
+        if existing is not None:
+            return existing
+
+        if self._langgraph_runtime is not None:
+            self._runtime_store[run_id] = self._langgraph_runtime
+            return self._langgraph_runtime
+
+        if deepagent_runtime is not None:
+            graph = deepagent_runtime.build_agent()
+            lgr = LangGraphRuntime(compiled_graph=graph)
+            self._runtime_store[run_id] = lgr
+            return lgr
+
+        raise RuntimeError(
+            "No LangGraphRuntime available. Provide deepagent_runtime or pre-configure langgraph_runtime."
         )
 
     async def create_run(
@@ -188,12 +204,9 @@ class RunManager:
     async def start_langgraph_run(
             self,
             run_id: str,
+            deepagent_runtime=None,
+            principal: Principal | None = None,
     ) -> Run:
-
-        if self.langgraph_runtime_adapter is None:
-            raise RuntimeError(
-                "LangGraph runtime is not configured"
-            )
 
         run = self._get_run(run_id)
 
@@ -205,29 +218,25 @@ class RunManager:
 
         run_context = self.context_builder.build(
             run,
+            principal=principal,
         )
 
-        try:
-            runtime_result = (
-                await self.langgraph_runtime_adapter.run(
-                    run_context
-                )
-            )
+        langgraph_runtime = self._get_or_create_langgraph_runtime(
+            run_id, deepagent_runtime
+        )
 
-            self._apply_runtime_result(
-                run,
-                runtime_result,
-            )
+        adapter = LangGraphRuntimeAdapter(langgraph_runtime)
+
+        try:
+            runtime_result = await adapter.run(run_context)
+            self._apply_runtime_result(run, runtime_result)
 
         except Exception as exc:
-
             run.status = RunStatus.FAILED
             run.error = str(exc)
 
         if run.status != RunStatus.WAITING_APPROVAL:
-            run.completed_at = (
-                datetime.now(timezone.utc)
-            )
+            run.completed_at = datetime.now(timezone.utc)
 
         return run
 
@@ -236,37 +245,29 @@ class RunManager:
             run_id: str,
             value: Any,
     ) -> Run:
-        if self.langgraph_runtime_adapter is None:
-            raise RuntimeError(
-                "LangGraph runtime is not configured"
-            )
-
         run = self._get_run(run_id)
 
         if run.status != RunStatus.WAITING_APPROVAL:
             raise ValueError(
-                f"Run cannot be resumed from status: "
-                f"{run.status}"
+                f"Run cannot be resumed from status: {run.status}"
             )
 
         run.status = RunStatus.RUNNING
 
-        run_context = self.context_builder.build(
-            run,
-        )
+        run_context = self.context_builder.build(run)
+
+        langgraph_runtime = self._runtime_store.get(run_id)
+        if langgraph_runtime is None:
+            raise RuntimeError(
+                "Cannot resume: no LangGraphRuntime found for this run. "
+                "Did you pass a deepagent_runtime on start?"
+            )
+
+        adapter = LangGraphRuntimeAdapter(langgraph_runtime)
 
         try:
-            runtime_result = (
-                await self.langgraph_runtime_adapter.resume(
-                    run_context,
-                    value,
-                )
-            )
-
-            self._apply_runtime_result(
-                run,
-                runtime_result,
-            )
+            runtime_result = await adapter.resume(run_context, value)
+            self._apply_runtime_result(run, runtime_result)
 
         except Exception as exc:
             run.status = RunStatus.FAILED

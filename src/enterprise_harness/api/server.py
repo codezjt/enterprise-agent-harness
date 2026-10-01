@@ -192,6 +192,45 @@ async def create_run(req: CreateRunRequest):
     return run_response(run)
 
 
+class StartRunRequest(BaseModel):
+    principal_id: str = "api-user"
+    principal_role: str = "admin"
+
+
+@app.post("/v1/runs/{run_id}/start")
+async def start_run(run_id: str, req: StartRunRequest | None = None):
+    manager = get_run_manager()
+    registry = get_registry()
+    gateway = _tool_gateway
+
+    try:
+        run = await manager.get_run(run_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    config = registry.get_config(run.agent_id)
+
+    from enterprise_harness.agent.deepagent_runtime import DeepAgentRuntime
+    from enterprise_harness.policy.rbac import Principal
+
+    runtime = DeepAgentRuntime(
+        config=config,
+        tool_gateway=gateway,
+    )
+
+    principal = Principal(
+        principal_id=(req.principal_id if req else "api-user"),
+        role=(req.principal_role if req else "admin"),
+    )
+
+    run = await manager.start_langgraph_run(
+        run_id=run_id,
+        deepagent_runtime=runtime,
+        principal=principal,
+    )
+    return run_response(run)
+
+
 @app.get("/v1/runs/{run_id}")
 async def get_run(run_id: str):
     manager = get_run_manager()
