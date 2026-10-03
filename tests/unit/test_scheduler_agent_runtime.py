@@ -11,11 +11,28 @@ from tests.helpers import FakeLangGraphRuntimeForAgent
 
 
 class FakeAgentRuntime(AgentRuntime):
-    async def run(self, task: str, context=None):
-        return {
-            "answer": f"completed: {task}",
-            "task_id": context["task_id"],
-        }
+    async def build_agent(self, run_context=None):
+        from langgraph.graph import StateGraph
+
+        async def execute(state: dict) -> dict:
+            task = "unknown"
+            ctx = {}
+            if run_context is not None:
+                task = run_context.task
+                ctx = run_context.context
+            answer = f"completed: {task}"
+            result = {
+                "answer": answer,
+                "task_id": ctx.get("task_id", ""),
+            }
+            state["messages"] = [type("msg", (), {"content": result})()]
+            return state
+
+        builder = StateGraph(dict)
+        builder.add_node("exec", execute)
+        builder.set_entry_point("exec")
+        builder.set_finish_point("exec")
+        return builder.compile()
 
 
 def create_runtime() -> FakeAgentRuntime:
@@ -74,7 +91,7 @@ async def test_scheduler_executes_agent_tasks():
     runtime = create_runtime()
 
     executor = AgentTaskExecutor(
-        langgraph_runtime=FakeLangGraphRuntimeForAgent(runtime),
+        runtime=FakeLangGraphRuntimeForAgent(runtime),
         run_context=context,
     )
 

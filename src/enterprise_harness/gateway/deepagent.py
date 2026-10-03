@@ -22,6 +22,7 @@ class DeepAgentToolAdapter:
         run_id: str | None = None,
         parent_span_id: str | None = None,
         tenant_id: str = "default",
+        trace_id: str | None = None,
     ):
         self.gateway = gateway
         self.principal = principal
@@ -29,6 +30,7 @@ class DeepAgentToolAdapter:
         self.run_id = run_id
         self.parent_span_id = parent_span_id
         self.tenant_id = tenant_id
+        self.trace_id = trace_id
 
     def adapt(
         self,

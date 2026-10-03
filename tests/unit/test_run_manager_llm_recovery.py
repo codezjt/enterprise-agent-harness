@@ -1,42 +1,49 @@
 from __future__ import annotations
 
-from typing import Any
-
 import pytest
-from langchain_core.language_models import FakeMessagesListChatModel
-from langchain_core.messages import AIMessage
+from langgraph.graph import StateGraph
 
 from enterprise_harness.agent import AgentConfig, AgentRuntime
 from enterprise_harness.orchestration.llm_replanner import LLMReplanner
 from enterprise_harness.orchestration.planner import Plan, Planner
 from enterprise_harness.orchestration.replanner import ReplanResult
 from enterprise_harness.orchestration.task import Task
-from enterprise_harness.runtime import RunManager, RunStatus
-from tests.helpers import FakeLangGraphRuntimeForAgent
+from enterprise_harness.runtime import RunManager, RunStatus, LangGraphRuntime
 
 
 class FakeAgentRuntime(AgentRuntime):
-    def __init__(self, config: AgentConfig):
+    def __init__(self, config: AgentConfig, calls: list[str] | None = None):
         super().__init__(config)
-        self.calls: list[str] = []
+        self.calls: list[str] = calls if calls is not None else []
 
-    async def run(
-        self,
-        task: str,
-        context: dict[str, Any] | None = None,
-    ) -> Any:
-        context = context or {}
+    def build_agent(self, run_context=None):
+        calls = self.calls
 
-        task_id = context.get("task_id")
-        self.calls.append(task_id)
+        async def execute(state):
+            ctx = state.get("context", {})
+            task_id = ctx.get("task_id", "")
+            calls.append(task_id)
 
-        if task_id == "T2":
-            raise RuntimeError("permission denied")
+            if task_id == "T2":
+                raise RuntimeError("permission denied")
 
-        return {
-            "task_id": task_id,
-            "answer": f"completed: {task}",
-        }
+            return {
+                "messages": [
+                    type("msg", (), {
+                        "content": {
+                            "task_id": task_id,
+                            "answer": f"completed: {state.get('messages', [{}])[-1].get('content', '') if state.get('messages') else ''}",
+                        }
+                    })()
+                ],
+                "context": ctx,
+            }
+
+        builder = StateGraph(dict)
+        builder.add_node("exec", execute)
+        builder.set_entry_point("exec")
+        builder.set_finish_point("exec")
+        return builder.compile()
 
 
 class InitialPlanner(Planner):
@@ -105,14 +112,20 @@ async def test_run_manager_llm_replanner_recovery():
         model="test-model",
     )
 
-    runtime = FakeAgentRuntime(config)
+    calls: list[str] = []
+    agent_runtime = FakeAgentRuntime(config, calls=calls)
 
     replanner = FakeLLMReplanner()
 
-    manager = RunManager(
-        langgraph_runtime=FakeLangGraphRuntimeForAgent(runtime),
+    langgraph_rt = LangGraphRuntime(
+        deepagent_runtime=agent_runtime,
+        planner=InitialPlanner(),
         replanner=replanner,
         max_replans=1,
+    )
+
+    manager = RunManager(
+        runtime=langgraph_rt,
     )
 
     run = await manager.create_run(
@@ -120,24 +133,23 @@ async def test_run_manager_llm_replanner_recovery():
         task="查询订单并更新库存",
     )
 
-    result = await manager.start_planned_run(
+    result = await manager.start_run(
         run_id=run.run_id,
-        runtime=runtime,
-        planner=InitialPlanner(),
+        runtime=langgraph_rt,
     )
 
     assert result.status == RunStatus.COMPLETED
 
-    assert "T1" in runtime.calls
-    assert "T2" in runtime.calls
-    assert "T2_ALT" in runtime.calls
-    assert "T3" in runtime.calls
+    assert "T1" in calls
+    assert "T2" in calls
+    assert "T2_ALT" in calls
+    assert "T3" in calls
 
-    assert runtime.calls.count("T2") == 1
+    assert calls.count("T2") == 1
 
-    assert runtime.calls.count("T2_ALT") == 1
+    assert calls.count("T2_ALT") == 1
 
-    assert runtime.calls.count("T3") == 1
+    assert calls.count("T3") == 1
 
     assert result.result["T2_ALT"] is not None
     assert result.result["T3"] is not None

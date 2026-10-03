@@ -229,10 +229,10 @@ async def chat(req: ChatRequest):
         except PermissionError as exc:
             raise HTTPException(status_code=403, detail=str(exc)) from exc
 
-    from enterprise_harness.agent.deepagent_runtime import DeepAgentRuntime
+    from enterprise_harness.application import RuntimeFactory
 
-    config = registry.get_config(agent_id)
-    runtime = DeepAgentRuntime(config=config, tool_gateway=gateway)
+    factory = RuntimeFactory(registry=registry, gateway=gateway)
+    runtime = await factory.create(agent_id=agent_id)
 
     run = await manager.create_run(
         agent_id=agent_id,
@@ -240,9 +240,9 @@ async def chat(req: ChatRequest):
         context=req.context,
     )
 
-    run = await manager.start_langgraph_run(
+    run = await manager.start_run(
         run_id=run.run_id,
-        deepagent_runtime=runtime,
+        runtime=runtime,
         principal=principal,
     )
 
@@ -354,7 +354,9 @@ class CreateRunRequest(BaseModel):
 class RunResponse(BaseModel):
     run_id: str
     agent_id: str
+    agent_version: str = "1.0.0"
     task: str
+    trace_id: str = ""
     status: str
     result: Any | None = None
     error: str | None = None
@@ -463,24 +465,20 @@ async def start_run(run_id: str, req: StartRunRequest | None = None):
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
-    config = registry.get_config(run.agent_id)
-
-    from enterprise_harness.agent.deepagent_runtime import DeepAgentRuntime
+    from enterprise_harness.application import RuntimeFactory
     from enterprise_harness.policy.rbac import Principal
 
-    runtime = DeepAgentRuntime(
-        config=config,
-        tool_gateway=gateway,
-    )
+    factory = RuntimeFactory(registry=registry, gateway=gateway)
+    runtime = await factory.create(agent_id=run.agent_id)
 
     principal = Principal(
         principal_id=(req.principal_id if req else "api-user"),
         role=(req.principal_role if req else "admin"),
     )
 
-    run = await manager.start_langgraph_run(
+    run = await manager.start_run(
         run_id=run_id,
-        deepagent_runtime=runtime,
+        runtime=runtime,
         principal=principal,
     )
     return run_response(run)
@@ -585,7 +583,9 @@ def run_response(run: Run) -> RunResponse:
     return RunResponse(
         run_id=run.run_id,
         agent_id=run.agent_id,
+        agent_version=run.agent_version,
         task=run.task,
+        trace_id=run.trace_id,
         status=run.status.value,
         result=run.result,
         error=run.error,

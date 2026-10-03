@@ -6,7 +6,6 @@ from fastapi.testclient import TestClient
 
 from enterprise_harness.agent import AgentConfig
 from enterprise_harness.agent.registry import AgentRegistry
-from enterprise_harness.agent.runtime import AgentRuntime
 from enterprise_harness.api.server import app, init_api
 from enterprise_harness.gateway import (
     ApprovalRequiredError,
@@ -26,27 +25,28 @@ from enterprise_harness.observability import (
 from enterprise_harness.policy import PolicyEngine, Principal, RBAC, Role
 from enterprise_harness.repositories import SqliteRunRepository
 from enterprise_harness.runtime import RunManager, RunStatus
+from enterprise_harness.runtime.contract import Runtime
+from enterprise_harness.runtime.context import RunContext
+from enterprise_harness.runtime.result import RuntimeResult, RuntimeStatus
 
 
-class MockAgentRuntime(AgentRuntime):
+class MockAgentRuntime(Runtime):
 
     def __init__(self, config, tool_gateway, metric_collector=None):
-        super().__init__(config, metric_collector=metric_collector)
+        self.config = config
         self.tool_gateway = tool_gateway
+        self.metric_collector = metric_collector
 
-    async def run(self, task, context=None):
-        return {"status": "completed"}
-
-    async def run_with_context(self, run_context):
+    async def run(self, context: RunContext) -> RuntimeResult:
         results = {}
         for tool_name in self.config.tools:
-            args = self._extract_args(tool_name, run_context.task)
+            args = self._extract_args(tool_name, context.task)
             try:
                 result = await self.tool_gateway.execute(
                     tool_name=tool_name,
                     arguments=args,
                     principal=Principal(principal_id="mock-u1", role="viewer"),
-                    run_id=run_context.run_id,
+                    run_id=context.run_id,
                 )
                 results[tool_name] = result
             except Exception:
@@ -55,7 +55,9 @@ class MockAgentRuntime(AgentRuntime):
         if self.metric_collector is not None:
             self.metric_collector.record_agent_run(success=True)
 
-        return {"status": "completed", "tool_results": results}
+        return RuntimeResult.completed(
+            result={"status": "completed", "tool_results": results}
+        )
 
     @staticmethod
     def _extract_args(tool_name, task):

@@ -6,9 +6,7 @@ from .result import RuntimeResult, RuntimeStatus
 
 def __getattr__(name: str):
     lazy = {
-        "AgentRuntimeAdapter": ".agent_runtime_adapter",
         "LangGraphRuntime": ".langgraph_runtime",
-        "LangGraphRuntimeAdapter": ".langgraph_runtime_adapter",
         "RunManager": ".manager",
         "Run": ".models",
         "RunStatus": ".models",
@@ -32,9 +30,7 @@ __all__ = [
     "Runtime",
     "RuntimeResult",
     "RuntimeStatus",
-    "AgentRuntimeAdapter",
     "LangGraphRuntime",
-    "LangGraphRuntimeAdapter",
     "RunManager",
     "Run",
     "RunStatus",

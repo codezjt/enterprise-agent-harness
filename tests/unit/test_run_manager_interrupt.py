@@ -4,34 +4,61 @@ from enterprise_harness.runtime import (
     RunManager,
     RunStatus,
 )
-from enterprise_harness.runtime.langgraph_runtime import (
-    LangGraphRuntime,
-)
-from tests.helpers import build_fake_compiled_graph
+from enterprise_harness.runtime.context import RunContext
+from enterprise_harness.runtime.result import RuntimeResult, RuntimeStatus
+
+
+class FakeInterruptRuntime:
+
+    def __init__(self):
+        self._call_count = 0
+
+    async def run(
+        self,
+        context: RunContext,
+    ) -> RuntimeResult:
+        self._call_count += 1
+        if self._call_count == 1:
+            return RuntimeResult.waiting_approval(
+                result={"__interrupt__": [{"value": {"type": "approval", "message": "是否执行订单更新？"}}]}
+            )
+        return RuntimeResult.completed(
+            result={"status": "updated", "task": context.task}
+        )
+
+    async def resume(
+        self,
+        context: RunContext,
+        value,
+    ) -> RuntimeResult:
+        self._call_count += 1
+        return RuntimeResult.completed(
+            result={"status": "updated", "task": context.task}
+        )
+
+    @property
+    def supports_resume(self) -> bool:
+        return True
+
+    @property
+    def supports_cancel(self) -> bool:
+        return False
 
 
 @pytest.mark.asyncio
 async def test_run_waits_for_approval():
-    async def execute(state):
-        return {"__interrupt__": [{"value": {"type": "approval", "message": "是否执行订单更新？"}}]}
+    runtime = FakeInterruptRuntime()
 
-    graph = build_fake_compiled_graph(execute)
-    langgraph_runtime = LangGraphRuntime(compiled_graph=graph)
-
-    class FakeBuildAgent:
-        def build_agent(self, run_context=None):
-            return graph
-
-    manager = RunManager()
+    manager = RunManager(runtime=runtime)
 
     run = await manager.create_run(
         agent_id="order-agent",
         task="更新订单 O1001",
     )
 
-    result = await manager.start_langgraph_run(
-        run.run_id,
-        deepagent_runtime=FakeBuildAgent(),
+    result = await manager.start_run(
+        run_id=run.run_id,
+        runtime=runtime,
     )
 
     assert result.status == RunStatus.WAITING_APPROVAL
@@ -40,44 +67,18 @@ async def test_run_waits_for_approval():
 
 @pytest.mark.asyncio
 async def test_resume_after_approval():
-    called_count = [0]
+    runtime = FakeInterruptRuntime()
 
-    class FakeInterruptRuntime:
-        async def run(self, run_id, input_data):
-            called_count[0] += 1
-            if called_count[0] == 1:
-                return {"__interrupt__": [{"value": {"type": "approval", "message": "是否执行订单更新？"}}]}
-            return {"result": {"status": "updated", "task": "更新订单 O1001"}}
-
-        async def resume(self, run_id, value):
-            called_count[0] += 1
-            return {"result": {"status": "updated", "task": "更新订单 O1001"}}
-
-        @staticmethod
-        def is_interrupted(result):
-            return bool(result.get("__interrupt__"))
-
-        @staticmethod
-        def extract_result(result):
-            if isinstance(result, dict):
-                return result.get("result")
-            return result
-
-        @staticmethod
-        def extract_approval(result):
-            return None
-
-    manager = RunManager(
-        langgraph_runtime=FakeInterruptRuntime(),
-    )
+    manager = RunManager(runtime=runtime)
 
     run = await manager.create_run(
         agent_id="order-agent",
         task="更新订单 O1001",
     )
 
-    waiting = await manager.start_langgraph_run(
-        run.run_id,
+    waiting = await manager.start_run(
+        run_id=run.run_id,
+        runtime=runtime,
     )
 
     assert waiting.status == RunStatus.WAITING_APPROVAL

@@ -17,6 +17,7 @@ class Principal:
 
     principal_id: str
     role: str
+    tenant_id: str = "default"
 
 
 class RBAC:

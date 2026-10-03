@@ -6,20 +6,35 @@ from enterprise_harness.orchestration.planner import Plan, Planner
 from enterprise_harness.orchestration.task import Task
 from enterprise_harness.runtime.manager import RunManager
 from enterprise_harness.runtime.models import RunStatus
+from enterprise_harness.runtime.langgraph_runtime import LangGraphRuntime
 from tests.helpers import FakeLangGraphRuntimeForAgent
 
 
 class FakeAgentRuntime(AgentRuntime):
+    async def build_agent(self, run_context=None):
+        from langgraph.graph import StateGraph
 
-    async def run(self, task: str, context=None):
-        return {
-            "answer": f"completed: {task}",
-            "task_id": context["task_id"],
-        }
+        async def execute(state: dict) -> dict:
+            task = "unknown"
+            ctx = {}
+            if run_context is not None:
+                task = run_context.task
+                ctx = run_context.context
+            result = {
+                "answer": f"completed: {task}",
+                "task_id": ctx.get("task_id", ""),
+            }
+            state["messages"] = [type("msg", (), {"content": result})()]
+            return state
+
+        builder = StateGraph(dict)
+        builder.add_node("exec", execute)
+        builder.set_entry_point("exec")
+        builder.set_finish_point("exec")
+        return builder.compile()
 
 
 class FakePlanner(Planner):
-
     async def plan(self, task: str) -> Plan:
         return Plan(
             task=task,
@@ -56,18 +71,25 @@ def create_runtime() -> FakeAgentRuntime:
 
 @pytest.mark.asyncio
 async def test_run_manager_executes_planned_run():
-    runtime = create_runtime()
-    manager = RunManager(langgraph_runtime=FakeLangGraphRuntimeForAgent(runtime))
+    agent_runtime = create_runtime()
+    runtime = FakeLangGraphRuntimeForAgent(agent_runtime)
+
+    planner = FakePlanner()
+    langgraph_rt = LangGraphRuntime(
+        deepagent_runtime=agent_runtime,
+        planner=planner,
+    )
+
+    manager = RunManager()
 
     run = await manager.create_run(
         agent_id="order-agent",
         task="处理订单 1001",
     )
 
-    result = await manager.start_planned_run(
+    result = await manager.start_run(
         run_id=run.run_id,
-        runtime=runtime,
-        planner=FakePlanner(),
+        runtime=langgraph_rt,
     )
 
     assert result.status == RunStatus.COMPLETED
@@ -82,16 +104,9 @@ async def test_run_manager_executes_planned_run():
 
 @pytest.mark.asyncio
 async def test_planner_output_controls_task_graph():
-    runtime = create_runtime()
-    manager = RunManager(langgraph_runtime=FakeLangGraphRuntimeForAgent(runtime))
-
-    run = await manager.create_run(
-        agent_id="order-agent",
-        task="处理订单 1001",
-    )
+    agent_runtime = create_runtime()
 
     class SingleTaskPlanner(Planner):
-
         async def plan(self, task: str) -> Plan:
             return Plan(
                 task=task,
@@ -104,10 +119,21 @@ async def test_planner_output_controls_task_graph():
                 ],
             )
 
-    result = await manager.start_planned_run(
-        run_id=run.run_id,
-        runtime=runtime,
+    langgraph_rt = LangGraphRuntime(
+        deepagent_runtime=agent_runtime,
         planner=SingleTaskPlanner(),
+    )
+
+    manager = RunManager()
+
+    run = await manager.create_run(
+        agent_id="order-agent",
+        task="处理订单 1001",
+    )
+
+    result = await manager.start_run(
+        run_id=run.run_id,
+        runtime=langgraph_rt,
     )
 
     assert result.status == RunStatus.COMPLETED
@@ -117,16 +143,9 @@ async def test_planner_output_controls_task_graph():
 
 @pytest.mark.asyncio
 async def test_run_manager_rejects_invalid_plan_before_execution():
-    runtime = create_runtime()
-    manager = RunManager(langgraph_runtime=FakeLangGraphRuntimeForAgent(runtime))
-
-    run = await manager.create_run(
-        agent_id="order-agent",
-        task="处理订单 1001",
-    )
+    agent_runtime = create_runtime()
 
     class InvalidPlanner(Planner):
-
         async def plan(self, task: str) -> Plan:
             return Plan(
                 task=task,
@@ -140,12 +159,22 @@ async def test_run_manager_rejects_invalid_plan_before_execution():
                 ],
             )
 
-    result = await manager.start_planned_run(
-        run_id=run.run_id,
-        runtime=runtime,
+    langgraph_rt = LangGraphRuntime(
+        deepagent_runtime=agent_runtime,
         planner=InvalidPlanner(),
     )
 
-    assert result.status == RunStatus.FAILED
+    manager = RunManager()
 
+    run = await manager.create_run(
+        agent_id="order-agent",
+        task="处理订单 1001",
+    )
+
+    result = await manager.start_run(
+        run_id=run.run_id,
+        runtime=langgraph_rt,
+    )
+
+    assert result.status == RunStatus.FAILED
     assert "UNKNOWN" in result.error

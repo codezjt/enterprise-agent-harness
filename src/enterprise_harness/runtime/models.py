@@ -41,6 +41,8 @@ class Run(BaseModel):
     tenant_id: str = "default"
     task: str
 
+    trace_id: str = ""
+
     status: RunStatus = RunStatus.CREATED
 
     context: dict[str, Any] = Field(default_factory=dict)

@@ -9,27 +9,35 @@ from enterprise_harness.orchestration.scheduler import Scheduler
 from enterprise_harness.orchestration.task import Task, TaskStatus
 from enterprise_harness.orchestration.task_graph import TaskGraph
 from enterprise_harness.runtime.context import RunContext
+from enterprise_harness.runtime.result import RuntimeResult, RuntimeStatus
 
 
 class FakeLangGraphRuntime:
     def __init__(self):
         self.runs: list[dict] = []
 
-    async def run(self, run_id, input_data):
-        task_content = input_data["messages"][0]["content"]
+    async def run(self, context: RunContext) -> RuntimeResult:
+        task_content = context.task
+        ctx_dict = context.context
         self.runs.append(
             {
-                "run_id": run_id,
-                "input_data": input_data,
+                "run_id": context.run_id,
+                "input_data": {
+                    "messages": [{"content": task_content}],
+                    "context": ctx_dict,
+                },
             }
         )
-        return {
-            "messages": [{"role": "assistant", "content": f"Done: {task_content}"}],
-        }
+        return RuntimeResult(
+            status=RuntimeStatus.COMPLETED,
+            result={
+                "messages": [{"role": "assistant", "content": f"Done: {task_content}"}],
+            },
+        )
 
 
 class FakeFailingLangGraphRuntime:
-    async def run(self, run_id, input_data):
+    async def run(self, context: RunContext) -> RuntimeResult:
         raise ValueError("simulated tool failure")
 
 
@@ -57,7 +65,7 @@ class TestAgentTaskExecutorLangGraph:
         lg_runtime = FakeLangGraphRuntime()
 
         executor = AgentTaskExecutor(
-            langgraph_runtime=lg_runtime,
+            runtime=lg_runtime,
             run_context=ctx,
         )
 
@@ -78,7 +86,7 @@ class TestAgentTaskExecutorLangGraph:
         lg_runtime = FakeLangGraphRuntime()
 
         executor = AgentTaskExecutor(
-            langgraph_runtime=lg_runtime,
+            runtime=lg_runtime,
             run_context=ctx,
         )
 
@@ -103,7 +111,7 @@ class TestAgentTaskExecutorLangGraph:
         lg_runtime = FakeLangGraphRuntime()
 
         executor = AgentTaskExecutor(
-            langgraph_runtime=lg_runtime,
+            runtime=lg_runtime,
             run_context=ctx,
         )
 
@@ -140,7 +148,7 @@ class TestAgentTaskExecutorLangGraph:
         lg_runtime = FakeLangGraphRuntime()
 
         executor = AgentTaskExecutor(
-            langgraph_runtime=lg_runtime,
+            runtime=lg_runtime,
             run_context=ctx,
         )
 
@@ -163,7 +171,7 @@ class TestAgentTaskExecutorLangGraph:
         lg_runtime = FakeLangGraphRuntime()
 
         executor = AgentTaskExecutor(
-            langgraph_runtime=lg_runtime,
+            runtime=lg_runtime,
             run_context=ctx,
         )
 
@@ -190,7 +198,7 @@ class TestTaskGraphSchedulerIntegration:
             task="test",
         )
         executor = AgentTaskExecutor(
-            langgraph_runtime=lg_runtime,
+            runtime=lg_runtime,
             run_context=ctx,
         )
 
@@ -220,7 +228,7 @@ class TestTaskGraphSchedulerIntegration:
             task="test",
         )
         executor = AgentTaskExecutor(
-            langgraph_runtime=FakeFailingLangGraphRuntime(),
+            runtime=FakeFailingLangGraphRuntime(),
             run_context=ctx,
         )
 
@@ -247,7 +255,7 @@ class TestPlannerPlanValidatorRecovery:
             task="Complete project",
         )
         executor = AgentTaskExecutor(
-            langgraph_runtime=lg_runtime,
+            runtime=lg_runtime,
             run_context=ctx,
         )
 

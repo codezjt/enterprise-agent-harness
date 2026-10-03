@@ -158,6 +158,14 @@ class ToolGateway:
 
         try:
 
+            # 0. Tenant Isolation Check
+            if principal is not None and tenant_id is not None:
+                if principal.tenant_id != "default" and principal.tenant_id != tenant_id:
+                    raise ToolPolicyError(
+                        f"Tenant mismatch: principal tenant {principal.tenant_id} "
+                        f"!= run tenant {tenant_id}"
+                    )
+
             # 1. Tool Routing
             tool = self.router.route(tool_name)
 

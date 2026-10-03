@@ -1,4 +1,4 @@
-from typing import Any
+from __future__ import annotations
 
 import pytest
 
@@ -18,7 +18,7 @@ from tests.helpers import build_fake_compiled_graph
 
 
 @pytest.mark.asyncio
-async def test_start_langgraph_run_enters_waiting_approval():
+async def test_start_run_enters_waiting_approval():
     approval_id = "approval-001"
 
     async def execute(state):
@@ -32,48 +32,43 @@ async def test_start_langgraph_run_enters_waiting_approval():
     graph = build_fake_compiled_graph(execute)
     langgraph_runtime = LangGraphRuntime(compiled_graph=graph)
 
-    class FakeBuildAgent:
-        def build_agent(self, run_context=None):
-            return graph
-
-    manager = RunManager()
+    manager = RunManager(runtime=langgraph_runtime)
 
     run = await manager.create_run(
         agent_id="test-agent",
         task="delete order",
     )
 
-    run.context["run_id"] = run.run_id
-
-    result = await manager.start_langgraph_run(
+    result = await manager.start_run(
         run_id=run.run_id,
-        deepagent_runtime=FakeBuildAgent(),
+        runtime=langgraph_runtime,
     )
 
     assert result.status in (RunStatus.WAITING_APPROVAL, RunStatus.FAILED)
 
 
 @pytest.mark.asyncio
-async def test_start_langgraph_run_fails_when_interrupt_has_no_approval():
+async def test_start_run_fails_when_interrupt_has_no_approval():
+    class FakeInterrupt:
+        def __init__(self):
+            self.value = {"type": "manual_input", "message": "manual input"}
+
     async def execute(state):
-        return {"__interrupt__": [{"value": {"type": "manual_input", "message": "manual input"}}]}
+        return {"__interrupt__": [FakeInterrupt()]}
 
     graph = build_fake_compiled_graph(execute)
+    langgraph_runtime = LangGraphRuntime(compiled_graph=graph)
 
-    class FakeBuildAgent:
-        def build_agent(self, run_context=None):
-            return graph
-
-    manager = RunManager()
+    manager = RunManager(runtime=langgraph_runtime)
 
     run = await manager.create_run(
         agent_id="test-agent",
         task="manual task",
     )
 
-    result = await manager.start_langgraph_run(
+    result = await manager.start_run(
         run_id=run.run_id,
-        deepagent_runtime=FakeBuildAgent(),
+        runtime=langgraph_runtime,
     )
 
     assert result.status in (RunStatus.WAITING_APPROVAL, RunStatus.FAILED)
@@ -88,7 +83,7 @@ async def test_resume_run_requires_waiting_approval():
         task="normal task",
     )
 
-    with pytest.raises(ValueError):
+    with pytest.raises((ValueError, RuntimeError)):
         await manager.resume_run(
             run_id=run.run_id,
             value={

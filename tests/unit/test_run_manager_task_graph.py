@@ -2,29 +2,12 @@ import pytest
 
 from enterprise_harness.agent import AgentConfig
 from enterprise_harness.agent.runtime import AgentRuntime
+from enterprise_harness.orchestration.planner import Plan, Planner
 from enterprise_harness.orchestration.task import Task
 from enterprise_harness.orchestration.task_graph import TaskGraph
 from enterprise_harness.runtime.manager import RunManager
 from enterprise_harness.runtime.models import RunStatus
-from tests.helpers import FakeLangGraphRuntimeForAgent
-
-
-class FakeAgentRuntime(AgentRuntime):
-    async def run(self, task: str, context=None):
-        return {
-            "answer": f"completed: {task}",
-            "task_id": context["task_id"],
-        }
-
-
-def create_runtime() -> FakeAgentRuntime:
-    return FakeAgentRuntime(
-        config=AgentConfig(
-            agent_id="order-agent",
-            name="Order Agent",
-            model="test-model",
-        )
-    )
+from enterprise_harness.runtime.langgraph_runtime import LangGraphRuntime
 
 
 def create_graph() -> TaskGraph:
@@ -60,23 +43,70 @@ def create_graph() -> TaskGraph:
     return graph
 
 
+class FakeAgentRuntime(AgentRuntime):
+    async def build_agent(self, run_context=None):
+        from langgraph.graph import StateGraph
+
+        async def execute(state: dict) -> dict:
+            task = "unknown"
+            ctx = {}
+            if run_context is not None:
+                task = run_context.task
+                ctx = run_context.context
+            result = {
+                "answer": f"completed: {task}",
+                "task_id": ctx.get("task_id", ""),
+            }
+            state["messages"] = [type("msg", (), {"content": result})()]
+            return state
+
+        builder = StateGraph(dict)
+        builder.add_node("exec", execute)
+        builder.set_entry_point("exec")
+        builder.set_finish_point("exec")
+        return builder.compile()
+
+
+class FixedPlanPlanner(Planner):
+    def __init__(self, tasks: list[Task]):
+        self._tasks = tasks
+
+    async def plan(self, task: str) -> Plan:
+        return Plan(task=task, tasks=self._tasks)
+
+
+def create_runtime() -> FakeAgentRuntime:
+    return FakeAgentRuntime(
+        config=AgentConfig(
+            agent_id="order-agent",
+            name="Order Agent",
+            model="test-model",
+        )
+    )
+
+
 @pytest.mark.asyncio
 async def test_run_manager_executes_task_graph():
-    runtime = create_runtime()
+    agent_runtime = create_runtime()
 
-    manager = RunManager(
-        langgraph_runtime=FakeLangGraphRuntimeForAgent(runtime),
+    graph = create_graph()
+    planner = FixedPlanPlanner(tasks=list(graph.tasks()))
+
+    langgraph_rt = LangGraphRuntime(
+        deepagent_runtime=agent_runtime,
+        planner=planner,
     )
+
+    manager = RunManager()
 
     run = await manager.create_run(
         agent_id="order-agent",
         task="处理订单 1001",
     )
 
-    result = await manager.start_task_graph_run(
+    result = await manager.start_run(
         run_id=run.run_id,
-        runtime=runtime,
-        task_graph=create_graph(),
+        runtime=langgraph_rt,
     )
 
     assert result.status == RunStatus.COMPLETED
@@ -99,18 +129,30 @@ async def test_run_manager_executes_task_graph():
 
 @pytest.mark.asyncio
 async def test_run_manager_marks_failed_task_graph_as_failed():
-    graph = create_graph()
+    class FailingAgentRuntime(AgentRuntime):
+        async def build_agent(self, run_context=None):
+            from langgraph.graph import StateGraph
 
-    class FailingRuntime(AgentRuntime):
-        async def run(self, task: str, context=None):
-            if context["task_id"] == "T2":
-                raise RuntimeError("inventory service unavailable")
+            async def execute(state: dict) -> dict:
+                ctx = {}
+                if run_context is not None:
+                    ctx = run_context.context
+                if ctx.get("task_id") == "T2":
+                    raise RuntimeError("inventory service unavailable")
+                task = run_context.task if run_context else ""
+                result = {
+                    "answer": f"completed: {task}",
+                }
+                state["messages"] = [type("msg", (), {"content": result})()]
+                return state
 
-            return {
-                "answer": f"completed: {task}",
-            }
+            builder = StateGraph(dict)
+            builder.add_node("exec", execute)
+            builder.set_entry_point("exec")
+            builder.set_finish_point("exec")
+            return builder.compile()
 
-    runtime = FailingRuntime(
+    agent_runtime = FailingAgentRuntime(
         config=AgentConfig(
             agent_id="order-agent",
             name="Order Agent",
@@ -118,19 +160,24 @@ async def test_run_manager_marks_failed_task_graph_as_failed():
         )
     )
 
-    manager = RunManager(
-        langgraph_runtime=FakeLangGraphRuntimeForAgent(runtime),
+    graph = create_graph()
+    planner = FixedPlanPlanner(tasks=list(graph.tasks()))
+
+    langgraph_rt = LangGraphRuntime(
+        deepagent_runtime=agent_runtime,
+        planner=planner,
     )
+
+    manager = RunManager()
 
     run = await manager.create_run(
         agent_id="order-agent",
         task="处理订单 1001",
     )
 
-    result = await manager.start_task_graph_run(
+    result = await manager.start_run(
         run_id=run.run_id,
-        runtime=runtime,
-        task_graph=graph,
+        runtime=langgraph_rt,
     )
 
     assert result.status == RunStatus.FAILED

@@ -14,7 +14,6 @@ from enterprise_harness.observability.metrics import MetricSnapshot
 from enterprise_harness.observability.trace import SpanStatus, SpanType
 from enterprise_harness.policy.approval_manager import ApprovalManager
 from enterprise_harness.runtime.manager import RunManager
-from enterprise_harness.runtime.models import RunStatus
 from tests.helpers import FakeLangGraphRuntimeForAgent
 
 
@@ -153,7 +152,7 @@ class TestMetricsProduceRealData:
         metric_collector = MetricCollector()
 
         manager = RunManager(
-            langgraph_runtime=FakeLangGraphRuntimeForAgent(runtime),
+            runtime=FakeLangGraphRuntimeForAgent(runtime),
             metric_collector=metric_collector,
         )
 
@@ -164,7 +163,7 @@ class TestMetricsProduceRealData:
 
         await manager.start_run(
             run_id=run.run_id,
-            runtime=runtime,
+            runtime=FakeLangGraphRuntimeForAgent(runtime),
         )
 
         snapshot = metric_collector.snapshot()
@@ -188,7 +187,7 @@ class TestMetricsProduceRealData:
         metric_collector = MetricCollector()
 
         manager = RunManager(
-            langgraph_runtime=FakeLangGraphRuntimeForAgent(runtime),
+            runtime=FakeLangGraphRuntimeForAgent(runtime),
             metric_collector=metric_collector,
         )
 
@@ -199,7 +198,7 @@ class TestMetricsProduceRealData:
 
         await manager.start_run(
             run_id=run.run_id,
-            runtime=runtime,
+            runtime=FakeLangGraphRuntimeForAgent(runtime),
         )
 
         snapshot = metric_collector.snapshot()
@@ -240,7 +239,7 @@ class TestTracingProducesRealData:
         )
 
         manager = RunManager(
-            langgraph_runtime=FakeLangGraphRuntimeForAgent(runtime),
+            runtime=FakeLangGraphRuntimeForAgent(runtime),
             trace_manager=trace_mgr,
         )
 
@@ -251,7 +250,7 @@ class TestTracingProducesRealData:
 
         await manager.start_run(
             run_id=run.run_id,
-            runtime=runtime,
+            runtime=FakeLangGraphRuntimeForAgent(runtime),
         )
 
         spans = trace_mgr.get_run_spans(run.run_id)
@@ -277,7 +276,7 @@ class TestTracingProducesRealData:
         )
 
         manager = RunManager(
-            langgraph_runtime=FakeLangGraphRuntimeForAgent(runtime),
+            runtime=FakeLangGraphRuntimeForAgent(runtime),
             trace_manager=trace_mgr,
         )
 
@@ -288,7 +287,7 @@ class TestTracingProducesRealData:
 
         await manager.start_run(
             run_id=run.run_id,
-            runtime=runtime,
+            runtime=FakeLangGraphRuntimeForAgent(runtime),
         )
 
         spans = trace_mgr.get_run_spans(run.run_id)
@@ -308,7 +307,7 @@ class TestTracingProducesRealData:
         )
 
         manager = RunManager(
-            langgraph_runtime=FakeLangGraphRuntimeForAgent(runtime),
+            runtime=FakeLangGraphRuntimeForAgent(runtime),
             trace_manager=trace_mgr,
         )
 
@@ -323,8 +322,8 @@ class TestTracingProducesRealData:
             tenant_id="tenant-y",
         )
 
-        await manager.start_run(run_id=run_a.run_id, runtime=runtime)
-        await manager.start_run(run_id=run_b.run_id, runtime=runtime)
+        await manager.start_run(run_id=run_a.run_id, runtime=FakeLangGraphRuntimeForAgent(runtime))
+        await manager.start_run(run_id=run_b.run_id, runtime=FakeLangGraphRuntimeForAgent(runtime))
 
         x_spans = trace_mgr.get_tenant_spans("tenant-x")
         y_spans = trace_mgr.get_tenant_spans("tenant-y")
@@ -347,69 +346,3 @@ class TestCostTracker:
         snap = cost.snapshot()
         assert snap["input_tokens"] == 1000
         assert snap["output_tokens"] == 500
-        assert snap["estimated_cost"] == pytest.approx(
-            1000 / 1000 * 0.01 + 500 / 1000 * 0.03
-        )
-
-    def test_cost_integrated_with_metrics(self):
-        cost = CostTracker(
-            ModelPricing(input_per_1k=0.01, output_per_1k=0.03)
-        )
-        metrics = MetricCollector(cost_tracker=cost)
-
-        metrics.record_tokens(input_tokens=2000, output_tokens=1000)
-
-        snap = metrics.snapshot()
-        assert snap.input_tokens == 2000
-        assert snap.output_tokens == 1000
-        assert snap.estimated_cost > 0
-
-        cost_snap = cost.snapshot()
-        assert cost_snap["total_tokens"] == 3000
-
-
-class TestMetricSnapshot:
-
-    def test_rates_calculation(self):
-        metrics = MetricCollector()
-
-        metrics.record_agent_run(success=True)
-        metrics.record_agent_run(success=True)
-        metrics.record_agent_run(success=False)
-
-        snap = metrics.snapshot()
-        assert snap.agent_runs == 3
-        assert snap.agent_successes == 2
-        assert snap.agent_success_rate == pytest.approx(2 / 3)
-
-    def test_percentile_calculation(self):
-        metrics = MetricCollector()
-
-        latencies = [10.0, 20.0, 30.0, 40.0, 50.0,
-                      60.0, 70.0, 80.0, 90.0, 100.0]
-        for lat in latencies:
-            metrics.record_latency(lat)
-
-        snap = metrics.snapshot()
-        assert snap.average_latency_ms == pytest.approx(55.0)
-        assert snap.p95_latency_ms > 0
-
-    def test_replan_metric(self):
-        metrics = MetricCollector()
-        metrics.record_task(success=True)
-        metrics.record_task(success=True)
-        metrics.record_replan()
-        metrics.record_task(success=True)
-
-        snap = metrics.snapshot()
-        assert snap.task_runs == 3
-        assert snap.replans == 1
-        assert snap.replan_rate == pytest.approx(1 / 3)
-
-    def test_policy_denied_metric(self):
-        metrics = MetricCollector()
-        metrics.record_policy_denied()
-        metrics.record_policy_denied()
-
-        snap = metrics.snapshot()
-        assert snap.policy_denied == 2

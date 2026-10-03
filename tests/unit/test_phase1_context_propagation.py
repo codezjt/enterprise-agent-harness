@@ -14,6 +14,7 @@ from enterprise_harness.policy.engine import PolicyEngine
 from enterprise_harness.policy.rbac import Principal
 from enterprise_harness.runtime import RunManager, RunStatus
 from enterprise_harness.runtime.context import RunContext
+from enterprise_harness.runtime.langgraph_runtime import LangGraphRuntime
 
 
 def _create_gateway() -> ToolGateway:
@@ -186,7 +187,7 @@ async def test_run_context_reaches_deepagent_and_gateway():
 
 
 @pytest.mark.asyncio
-async def test_start_langgraph_run_is_compatibility_wrapper():
+async def test_start_run_with_langgraph_runtime():
     gateway = _create_gateway()
 
     config = AgentConfig(
@@ -196,14 +197,16 @@ async def test_start_langgraph_run_is_compatibility_wrapper():
         tools=["test_tool"],
     )
 
-    runtime = DeepAgentRuntime(
+    deepagent_rt = DeepAgentRuntime(
         config=config,
         tool_gateway=gateway,
         context_builder=ContextBuilder(),
         context_provider=ContextProvider(),
     )
 
-    manager = RunManager()
+    langgraph_rt = LangGraphRuntime(deepagent_runtime=deepagent_rt)
+
+    manager = RunManager(runtime=langgraph_rt)
 
     run = await manager.create_run(
         agent_id="test-agent",
@@ -215,16 +218,9 @@ async def test_start_langgraph_run_is_compatibility_wrapper():
         role="admin",
     )
 
-    with pytest.raises(ValueError, match="deepagent_runtime is required"):
-        await manager.start_langgraph_run(
-            run_id=run.run_id,
-            deepagent_runtime=None,
-            principal=principal,
-        )
-
-    result = await manager.start_langgraph_run(
+    result = await manager.start_run(
         run_id=run.run_id,
-        deepagent_runtime=runtime,
+        runtime=langgraph_rt,
         principal=principal,
     )
 

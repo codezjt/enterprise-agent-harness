@@ -1,5 +1,6 @@
 import pytest
 
+from enterprise_harness.runtime.context import RunContext
 from enterprise_harness.runtime.langgraph_runtime import (
     LangGraphRuntime,
 )
@@ -17,9 +18,13 @@ async def test_run():
     graph = build_fake_compiled_graph(execute)
     runtime = LangGraphRuntime(compiled_graph=graph)
 
-    result = await runtime.run(
+    context = RunContext(
         run_id="run-001",
-        input_data={"task": "hello"},
+        agent_id="test-agent",
+        task="hello",
     )
 
-    assert result["result"] == "completed: hello"
+    result = await runtime.run(context)
+
+    assert result.is_completed
+    assert result.result["result"] == "completed: hello"

@@ -9,32 +9,53 @@ from enterprise_harness.observability import (
     SpanType,
 )
 from enterprise_harness.policy.rbac import Principal
-from enterprise_harness.runtime import RunManager
+from enterprise_harness.runtime import RunManager, LangGraphRuntime
+from enterprise_harness.runtime.context import RunContext
 
 
 class FakeAgentRuntime(AgentRuntime):
+    async def build_agent(self, run_context=None):
+        from langgraph.graph import StateGraph
 
-    async def run(
-        self,
-        task: str,
-        context=None,
-    ):
-        return {
-            "answer": f"completed: {task}",
-            "context": context,
-        }
+        async def execute(state: dict) -> dict:
+            task = "unknown"
+            if run_context is not None:
+                task = run_context.task
+            result = f"completed: {task}"
+            state["messages"] = [type("msg", (), {"content": result})()]
+            return state
+
+        builder = StateGraph(dict)
+        builder.add_node("exec", execute)
+        builder.set_entry_point("exec")
+        builder.set_finish_point("exec")
+        return builder.compile()
+
+
+class FailingAgentRuntime(AgentRuntime):
+    async def build_agent(self, run_context=None):
+        from langgraph.graph import StateGraph
+
+        async def execute(state: dict) -> dict:
+            raise RuntimeError("agent execution failed")
+
+        builder = StateGraph(dict)
+        builder.add_node("exec", execute)
+        builder.set_entry_point("exec")
+        builder.set_finish_point("exec")
+        return builder.compile()
 
 
 @pytest.mark.asyncio
 async def test_run_manager_creates_context_and_agent_trace():
-
     config = AgentConfig(
         agent_id="test-agent",
         name="Test Agent",
         model="test-model",
     )
 
-    runtime = FakeAgentRuntime(config)
+    agent_runtime = FakeAgentRuntime(config)
+    runtime = LangGraphRuntime(deepagent_runtime=agent_runtime)
 
     manager = RunManager()
 
@@ -59,9 +80,7 @@ async def test_run_manager_creates_context_and_agent_trace():
 
     assert result.status.value == "COMPLETED"
 
-    assert result.result["answer"] == (
-        "completed: 查询订单 ORD001"
-    )
+    assert "completed: 查询订单 ORD001" in str(result.result)
 
     spans = manager.trace_manager.get_run_spans(
         run.run_id
@@ -78,25 +97,14 @@ async def test_run_manager_creates_context_and_agent_trace():
 
 @pytest.mark.asyncio
 async def test_failed_agent_execution_creates_failed_trace():
-
     config = AgentConfig(
         agent_id="test-agent",
         name="Test Agent",
         model="test-model",
     )
 
-    class FailingRuntime(AgentRuntime):
-
-        async def run(
-            self,
-            task: str,
-            context=None,
-        ):
-            raise RuntimeError(
-                "agent execution failed"
-            )
-
-    runtime = FailingRuntime(config)
+    agent_runtime = FailingAgentRuntime(config)
+    runtime = LangGraphRuntime(deepagent_runtime=agent_runtime)
 
     manager = RunManager()
 

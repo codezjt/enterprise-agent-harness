@@ -25,6 +25,8 @@ class RunContext(BaseModel):
 
     task: str
 
+    trace_id: str = ""
+
     context: dict[str, Any] = Field(
         default_factory=dict
     )

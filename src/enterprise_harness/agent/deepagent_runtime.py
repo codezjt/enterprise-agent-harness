@@ -9,20 +9,22 @@ from deepagents import (
 )
 from langgraph.checkpoint.memory import MemorySaver
 
+from typing import TYPE_CHECKING
+
 from enterprise_harness.context import (
     ContextBuilder,
     ContextProvider,
 )
-from enterprise_harness.gateway.deepagent import DeepAgentToolAdapter
-from enterprise_harness.gateway.gateway import ToolGateway
 from enterprise_harness.observability import MetricCollector
 from enterprise_harness.runtime.context import RunContext
+
+if TYPE_CHECKING:
+    from enterprise_harness.gateway.deepagent import DeepAgentToolAdapter
+    from enterprise_harness.gateway.gateway import ToolGateway
 
 from .config import AgentConfig
 from .model import resolve_model
 from .runtime import AgentRuntime
-
-import time
 
 
 _FS_TOOL_MAP: dict[str, str] = {
@@ -115,6 +117,7 @@ class DeepAgentRuntime(AgentRuntime):
                 else self.principal
             )
 
+            from enterprise_harness.gateway.deepagent import DeepAgentToolAdapter
             adapter = DeepAgentToolAdapter(
                 gateway=self.tool_gateway,
                 principal=principal,
@@ -129,6 +132,11 @@ class DeepAgentRuntime(AgentRuntime):
                     run_context.tenant_id
                     if run_context
                     else "default"
+                ),
+                trace_id=(
+                    run_context.trace_id
+                    if run_context
+                    else None
                 ),
             )
 
@@ -167,82 +175,3 @@ class DeepAgentRuntime(AgentRuntime):
     @property
     def checkpointer(self):
         return self._checkpointer
-
-    async def run(
-        self,
-        task: str,
-        context: dict[str, Any] | None = None,
-    ) -> Any:
-        input_data: dict[str, Any] = {
-            "messages": [
-                {
-                    "role": "user",
-                    "content": task,
-                }
-            ]
-        }
-        if context:
-            input_data["context"] = context
-
-        agent = self.build_agent(run_context=None)
-        start_time = time.perf_counter()
-        try:
-            result = await agent.ainvoke(input_data)
-            if self.metric_collector is not None:
-                self.metric_collector.record_agent_run(success=True)
-                self.metric_collector.record_latency(
-                    (time.perf_counter() - start_time) * 1000
-                )
-            return result
-        except Exception:
-            if self.metric_collector is not None:
-                self.metric_collector.record_agent_run(success=False)
-            raise
-
-    async def run_with_context(
-        self,
-        run_context: RunContext,
-    ):
-        if self.context_provider is not None:
-            memory_results = await self.context_provider.get_memory(
-                query=run_context.task,
-            )
-            rag_results = await self.context_provider.get_rag(
-                query=run_context.task,
-            )
-            run_context.context["memory_results"] = memory_results
-            run_context.context["rag_results"] = rag_results
-
-        built_context = self.context_builder.build_from_run_context(run_context)
-        run_context.built_context = built_context
-
-        agent = self.build_agent(run_context)
-
-        input_data = {
-            "messages": [
-                {
-                    "role": "user",
-                    "content": run_context.task,
-                }
-            ],
-            "context": {
-                "items": [item.model_dump() for item in built_context]
-            },
-        }
-
-        thread_id = run_context.run_id or str(__import__("uuid").uuid4())
-        invoke_config = {"configurable": {"thread_id": thread_id}}
-
-        start_time = time.perf_counter()
-        try:
-            result = await agent.ainvoke(input_data, invoke_config)
-            if self.metric_collector is not None:
-                self.metric_collector.record_agent_run(success=True)
-                self.metric_collector.record_latency(
-                    (time.perf_counter() - start_time) * 1000
-                )
-            return result
-        except Exception:
-            if self.metric_collector is not None:
-                self.metric_collector.record_agent_run(success=False)
-            raise

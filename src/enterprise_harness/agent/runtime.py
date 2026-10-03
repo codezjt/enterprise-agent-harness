@@ -18,44 +18,27 @@ class AgentRuntime(ABC):
         self.metric_collector = metric_collector
 
     @abstractmethod
-    async def run(
+    def build_agent(
         self,
-        task: str,
-        context: dict[str, Any] | None = None,
+        run_context: RunContext | None = None,
     ) -> Any:
         """
-        执行一个 Agent Task。
+        基于 RunContext 构建 Agent 执行图。
 
-        Args:
-            task: 当前任务描述
-            context: Runtime 上下文
+        DeepAgentRuntime 负责 Agent Capability 的组装：
+          - AgentConfig
+          - Model
+          - Tools（通过 ToolGateway）
+          - Middleware
+          - Skills
+          - Memory
 
-        Returns:
-            Agent 执行结果
+        LangGraphRuntime 负责 Durable Execution：
+          - checkpoint
+          - interrupt
+          - resume
+          - cancellation
+
+        RunManager 只调用 Runtime.run(context)。
         """
         raise NotImplementedError
-
-    async def run_with_context(
-        self,
-        run_context: RunContext,
-    ) -> Any:
-        try:
-            result = await self.run(
-                task=run_context.task,
-                context=run_context.context,
-            )
-
-            if self.metric_collector is not None:
-                self.metric_collector.record_agent_run(
-                    success=True
-                )
-
-            return result
-
-        except Exception:
-            if self.metric_collector is not None:
-                self.metric_collector.record_agent_run(
-                    success=False
-                )
-
-            raise

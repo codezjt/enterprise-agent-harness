@@ -52,13 +52,10 @@ from enterprise_harness.policy import (
     Role,
 )
 from enterprise_harness.runtime import (
-    AgentRuntimeAdapter,
     LangGraphRuntime,
-    LangGraphRuntimeAdapter,
     RunManager,
     RunStatus,
 )
-from enterprise_harness.runtime.recovery import RecoveryManager
 
 
 # ─── 模拟数据层 ────────────────────────────────────────────────────
@@ -346,9 +343,7 @@ async def run_demo():
     agent_runtime = MinimalAgentRuntime(gateway=gateway)
 
     # 4. RunManager -----------------------------------------------
-    replanner = SimpleReplanner()
-    recovery = RecoveryManager(replanner=replanner, max_replans=1)
-    run_manager = RunManager(replanner=replanner, trace_manager=trace_manager)
+    run_manager = RunManager(trace_manager=trace_manager)
 
     # 5. Principal ------------------------------------------------
     principal = Principal(principal_id="user-001", role="manager")

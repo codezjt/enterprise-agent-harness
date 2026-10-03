@@ -141,50 +141,50 @@ def test_langgraph_runtime_interrupt_detection():
 
 
 # ============================================================
-# Test 3: LangGraphRuntimeAdapter → RuntimeResult 转换
+# Test 3: LangGraphRuntime → RuntimeResult 转换
 # ============================================================
 
-def test_langgraph_runtime_adapter_to_runtime_result():
-    """LangGraphRuntimeAdapter 应该正确把 interrupt 结果转成 WAITING_APPROVAL"""
+def test_langgraph_runtime_to_runtime_result():
+    """LangGraphRuntime 应该正确把 interrupt 结果转成 WAITING_APPROVAL"""
     from enterprise_harness.runtime.langgraph_runtime import LangGraphRuntime
-    from enterprise_harness.runtime.langgraph_runtime_adapter import LangGraphRuntimeAdapter
 
-    class FakeRuntime(LangGraphRuntime):
-        async def run(self, run_id, input_data):
-            return {
-                "__interrupt__": [
-                    type("X", (), {
-                        "value": {
-                            "type": "approval_required",
-                            "approval_id": "ap-42",
-                            "tool_name": "write_order",
-                        }
-                    })()
-                ],
-                "messages": [],
-            }
-        async def resume(self, run_id, value):
+    class FakeCompiled:
+        def __init__(self):
+            self.invoke_count = 0
+
+        async def ainvoke(self, input_data=None, config=None):
+            self.invoke_count += 1
+            if self.invoke_count == 1:
+                return {
+                    "__interrupt__": [
+                        type("X", (), {
+                            "value": {
+                                "type": "approval_required",
+                                "approval_id": "ap-42",
+                                "tool_name": "write_order",
+                            }
+                        })()
+                    ],
+                    "messages": [],
+                }
             return {"messages": [type("A", (), {"content": "done"})()]}
 
-    class FakeCompiled: pass
-    fake_rt = FakeRuntime(compiled_graph=FakeCompiled())
-    adapter = LangGraphRuntimeAdapter(fake_rt)
+    fake_graph = FakeCompiled()
+    langgraph_rt = LangGraphRuntime(compiled_graph=fake_graph)
 
     from enterprise_harness.runtime.context import RunContext
     ctx = RunContext(
         run_id="run-001",
-        run=None,
         agent_id="a1",
         task="test task",
         context={},
-        principal=None,
     )
 
-    result = asyncio.run(adapter.run(ctx))
+    result = asyncio.run(langgraph_rt.run(ctx))
     assert result.status == RuntimeStatus.WAITING_APPROVAL
     assert result.approval_id == "ap-42"
 
-    resumed = asyncio.run(adapter.resume(ctx, {"approval_id": "ap-42", "approved": True}))
+    resumed = asyncio.run(langgraph_rt.resume(ctx, {"approval_id": "ap-42", "approved": True}))
     assert resumed.status == RuntimeStatus.COMPLETED
     print("  ✓ RuntimeResult 转换正确")
 
@@ -262,77 +262,94 @@ def test_policy_rbac_gateway_full_chain():
 # ============================================================
 
 def test_runmanager_waiting_approval_resume():
-    """RunManager 能被正确使用：create → start_langgraph_run (fake LGR) → WAITING → resume"""
+    """RunManager 能被正确使用：create → start_run → WAITING → resume"""
     from enterprise_harness.runtime.manager import RunManager
 
-    # 构造一个 fake LangGraphRuntime adapter 层
-    manager = RunManager()
-
-    # create
-    run = asyncio.run(manager.create_run(agent_id="a1", task="do something"))
-    assert run.status.value == "CREATED"
-
-    # 用一个假的 deepagent runtime 来让 build_agent 返回我们想要的 interrupt 结果
     from enterprise_harness.runtime.langgraph_runtime import LangGraphRuntime
 
     class FakeCompiled:
-        async def ainvoke(self, input_data, config):
-            return {
-                "__interrupt__": [
-                    type("X", (), {
-                        "value": {
-                            "type": "approval_required",
-                            "approval_id": "ap-zzz",
-                            "tool_name": "write_order",
-                        }
-                    })()
-                ],
-                "messages": [],
-            }
+        def __init__(self):
+            self._called = False
 
-    class FakeRuntime:
-        def build_agent(self, run_context=None):
-            return FakeCompiled()
+        async def ainvoke(self, input_data=None, config=None):
+            if not self._called:
+                self._called = True
+                return {
+                    "__interrupt__": [
+                        type("X", (), {
+                            "value": {
+                                "type": "approval_required",
+                                "approval_id": "ap-zzz",
+                                "tool_name": "write_order",
+                            }
+                        })()
+                    ],
+                    "messages": [],
+                }
+            return {"messages": [type("A", (), {"content": "done"})()]}
+
+        def get_state(self, config=None):
+            class FakeState:
+                next = ("exec",)
+            return FakeState()
+
+        def update_state(self, config=None, values=None):
+            pass
+
+    fake_graph = FakeCompiled()
+    langgraph_rt = LangGraphRuntime(compiled_graph=fake_graph)
+
+    manager = RunManager(runtime=langgraph_rt)
+
+    run = asyncio.run(manager.create_run(agent_id="a1", task="do something"))
+    assert run.status.value == "CREATED"
 
     from enterprise_harness.policy.rbac import Principal
-    run2 = asyncio.run(manager.start_langgraph_run(
+    run2 = asyncio.run(manager.start_run(
         run_id=run.run_id,
-        deepagent_runtime=FakeRuntime(),
+        runtime=langgraph_rt,
         principal=Principal(principal_id="u", role="admin"),
     ))
     assert run2.status.value == "WAITING_APPROVAL", f"Expected WAITING_APPROVAL, got {run2.status.value}, error={run2.error}"
     assert run2.approval_id == "ap-zzz"
 
-    # resume — RunManager._runtime_store 里已经存好了 LangGraphRuntime
-    # RunManager._get_or_create_langgraph_runtime 已经帮我们存好了
-
     class FakeCompiled2:
-        async def ainvoke(self, input_data, config):
-            # 第一次调用有 interrupt，第二次（resume）返回正常
-            if hasattr(self, "_done"):
-                return {"messages": [type("A", (), {"content": "ok final"})()]}
-            self._done = True
-            return {
-                "__interrupt__": [
-                    type("X", (), {
-                        "value": {"type": "approval_required", "approval_id": "ap-resume"}
-                    })()
-                ],
-                "messages": [],
-            }
+        def __init__(self):
+            self._done = False
 
-    class FakeRuntime2:
-        def build_agent(self, run_context=None):
-            return FakeCompiled2()
+        async def ainvoke(self, input_data=None, config=None):
+            if not self._done:
+                self._done = True
+                return {
+                    "__interrupt__": [
+                        type("X", (), {
+                            "value": {"type": "approval_required", "approval_id": "ap-resume"}
+                        })()
+                    ],
+                    "messages": [],
+                }
+            return {"messages": [type("A", (), {"content": "ok final"})()]}
 
-    run3 = asyncio.run(manager.create_run(agent_id="a2", task="something"))
-    run3 = asyncio.run(manager.start_langgraph_run(
+        def get_state(self, config=None):
+            class FakeState:
+                next = ("exec",)
+            return FakeState()
+
+        def update_state(self, config=None, values=None):
+            pass
+
+    fake_graph2 = FakeCompiled2()
+    langgraph_rt2 = LangGraphRuntime(compiled_graph=fake_graph2)
+
+    manager2 = RunManager(runtime=langgraph_rt2)
+    run3 = asyncio.run(manager2.create_run(agent_id="a2", task="something"))
+    run3 = asyncio.run(manager2.start_run(
         run_id=run3.run_id,
-        deepagent_runtime=FakeRuntime2(),
+        runtime=langgraph_rt2,
     ))
     assert run3.status.value == "WAITING_APPROVAL"
 
-    run4 = asyncio.run(manager.resume_run(
+    run4 = asyncio.run(manager2.resume_run(
         run3.run_id,
         value={"approval_id": run3.approval_id, "approved": True},
     ))

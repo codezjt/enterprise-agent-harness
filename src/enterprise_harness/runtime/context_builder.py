@@ -35,13 +35,16 @@ class RunContextBuilder:
             run_id=run.run_id,
             agent_name=run.agent_id,
             tenant_id=run.tenant_id,
+            trace_id=context.trace_id,
             input={
                 "task": run.task,
                 "context": run.context,
             },
             metadata={
                 "agent_id": run.agent_id,
+                "agent_version": run.agent_version,
                 "tenant_id": run.tenant_id,
+                "trace_id": context.trace_id,
             },
         )
 
